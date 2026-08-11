@@ -1,1 +1,6 @@
-# DRM2-PSE-Tool
+# DRM2-PSE-Tool 
+streamlit
+pandas
+matplotlib
+numpy
+scipy
