@@ -322,6 +322,24 @@ def compute_health_score(df, total):
 def render_summary_tab(df, total, dr):
     if total == 0: st.warning("No data."); return
 
+    # UK IDs for SCC — copy-ready section
+    with st.expander("📋 UK Tracking IDs — Copy into SCC for location data", expanded=False):
+        uk_ids = df[df["Scannable ID"].astype(str).str.startswith("UK")]["Scannable ID"].unique()
+        if len(uk_ids) > 0:
+            st.caption(f"**{len(uk_ids)} unique UK IDs** ready to paste into SCC (Ctrl+A → Ctrl+C from the box below).")
+            st.caption("Non-UK IDs (CR...) already removed. Paste these into SCC → Export → re-upload here as SCC CSV for full location analysis.")
+            ids_text = "\n".join(uk_ids)
+            st.text_area("UK Tracking IDs:", value=ids_text, height=200, key="summary_ids_box")
+            col_dl1, col_dl2 = st.columns(2)
+            with col_dl1:
+                st.download_button("⬇️ Download as TXT", ids_text, "UK_IDs_for_SCC.txt", "text/plain", key="summary_dl_ids")
+            with col_dl2:
+                # CSV format (one column) for easy paste
+                st.download_button("⬇️ Download as CSV", pd.DataFrame({"Tracking ID": uk_ids}).to_csv(index=False),
+                                   "UK_IDs_for_SCC.csv", "text/csv", key="summary_dl_ids_csv")
+        else:
+            st.info("No UK tracking IDs in current filtered data.")
+
     # Process breakdown
     with st.expander("📦 By Process", expanded=True):
         proc_data = df.groupby("Process").agg(
@@ -472,41 +490,91 @@ def render_locations_tab(df, total, dr):
 def render_ps_tab(df, total, dr):
     if total == 0: st.warning("No data."); return
 
-    with st.expander("👤 Effectiveness by Problem Solver", expanded=True):
+    with st.expander("👤 Ranked: Worst → Best (by Effectiveness %)", expanded=True):
+        st.caption("Sorted by effectiveness rate — lowest (worst) at top. Only solvers with 3+ events shown for fairness.")
         ps_data = df.groupby("PS Display").agg(
             Total=("Scannable ID", "count"),
             Effective=("Is Effective", "sum"),
             SLA=("SLA Met", "sum"),
-            Avg_Res=("Resolution Min", "mean")
-        ).sort_values("Total", ascending=False)
+            Avg_Res=("Resolution Min", "mean"),
+            Cost=("Cost (£)", "sum")
+        )
         ps_data["Ineffective"] = ps_data["Total"] - ps_data["Effective"]
         ps_data["Eff Rate"] = (ps_data["Effective"] / ps_data["Total"] * 100).round(1)
         ps_data["SLA %"] = (ps_data["SLA"] / ps_data["Total"] * 100).round(1)
         ps_data["Avg Res (min)"] = ps_data["Avg_Res"].round(0)
 
-        display_df = ps_data[["Total", "Effective", "Ineffective", "Eff Rate", "SLA %", "Avg Res (min)"]].rename(
-            columns={"Eff Rate": "Eff %"})
-        display_df.index = display_df.index.rename("Problem Solver")
-        st.dataframe(display_df, use_container_width=True)
+        # Filter to 3+ events and sort worst → best
+        meaningful = ps_data[ps_data["Total"] >= 3].sort_values("Eff Rate", ascending=True)
+
+        if len(meaningful) > 0:
+            # Add rank column
+            ranked = meaningful.reset_index()
+            ranked.index = range(1, len(ranked)+1)
+            ranked.index.name = "Rank"
+            ranked = ranked.rename(columns={"PS Display": "Problem Solver", "Eff Rate": "Eff %", "Avg Res (min)": "Avg Min"})
+
+            # Colour code: red if <50%, orange if <avg, green if above avg
+            avg_eff = meaningful["Eff Rate"].mean()
+            st.markdown(f"**Average effectiveness: {avg_eff:.1f}%** (across {len(meaningful)} solvers with 3+ events)")
+
+            display_cols = ["Problem Solver", "Total", "Effective", "Ineffective", "Eff %", "SLA %", "Avg Min"]
+            st.dataframe(ranked[display_cols], use_container_width=True, height=min(600, 35*len(ranked)+38))
+        else:
+            st.info("No problem solvers with 3+ events.")
+
+        # Also show the full list (including <3 events) collapsed
+        if len(ps_data) > len(meaningful):
+            low_volume = ps_data[ps_data["Total"] < 3].sort_values("Eff Rate", ascending=True)
+            if len(low_volume) > 0:
+                st.caption(f"_{len(low_volume)} solver(s) with <3 events excluded from ranking (too few to judge):_")
+                with st.expander(f"Show {len(low_volume)} low-volume solvers"):
+                    lv_display = low_volume[["Total", "Effective", "Ineffective", "Eff Rate"]].rename(
+                        columns={"Eff Rate": "Eff %"}).reset_index().rename(columns={"PS Display": "Problem Solver"})
+                    lv_display.index = range(1, len(lv_display)+1)
+                    st.dataframe(lv_display, use_container_width=True)
 
     with st.expander("🔴 Flagged — Below Average Effectiveness"):
-        if len(ps_data) >= 3:
-            avg_eff = ps_data["Eff Rate"].mean()
-            # Only flag people with 5+ events (statistically meaningful)
-            meaningful = ps_data[ps_data["Total"] >= 5]
-            flagged = meaningful[meaningful["Eff Rate"] < avg_eff - 10]
+        meaningful_flag = ps_data[ps_data["Total"] >= 5]
+        if len(meaningful_flag) >= 3:
+            avg_eff_flag = meaningful_flag["Eff Rate"].mean()
+            flagged = meaningful_flag[meaningful_flag["Eff Rate"] < avg_eff_flag - 10].sort_values("Eff Rate", ascending=True)
             if len(flagged) > 0:
-                st.error(f"🚨 {len(flagged)} solver(s) significantly below average ({avg_eff:.0f}% avg):")
-                flag_display = flagged[["Total", "Effective", "Ineffective", "Eff Rate"]].rename(
+                st.error(f"🚨 {len(flagged)} solver(s) more than 10pp below average ({avg_eff_flag:.0f}% avg):")
+                flag_display = flagged[["Total", "Effective", "Ineffective", "Eff Rate", "SLA %"]].rename(
                     columns={"Eff Rate": "Eff %"})
-                flag_display.index = range(1, len(flag_display)+1)
-                # Re-add the PS name as a column
                 flag_display.insert(0, "Problem Solver", flagged.index)
+                flag_display.index = range(1, len(flag_display)+1)
                 st.dataframe(flag_display, use_container_width=True)
             else:
-                st.success(f"✅ No solvers significantly below average ({avg_eff:.0f}%).")
+                st.success(f"✅ No solvers significantly below average ({avg_eff_flag:.0f}%).")
         else:
-            st.info("Need 3+ problem solvers to flag outliers.")
+            st.info("Need 3+ problem solvers with 5+ events to flag outliers.")
+
+    with st.expander("📊 By Process — Who handles what?"):
+        st.caption("Shows each solver's workload and effectiveness broken down by process type.")
+        ps_proc = df.groupby(["PS Display", "Process"]).agg(
+            Total=("Scannable ID", "count"),
+            Effective=("Is Effective", "sum")
+        ).reset_index()
+        ps_proc["Eff %"] = (ps_proc["Effective"] / ps_proc["Total"] * 100).round(1)
+
+        # Pivot for readability
+        pivot_total = ps_proc.pivot_table(index="PS Display", columns="Process", values="Total", fill_value=0)
+        pivot_eff = ps_proc.pivot_table(index="PS Display", columns="Process", values="Eff %", fill_value=0)
+
+        # Only show solvers with 3+ total events
+        solver_totals = pivot_total.sum(axis=1)
+        valid_solvers = solver_totals[solver_totals >= 3].index
+        pivot_total = pivot_total.loc[valid_solvers].sort_values(by=pivot_total.columns.tolist(), ascending=True)
+
+        if len(pivot_total) > 0:
+            st.markdown("**Event count by solver × process:**")
+            st.dataframe(pivot_total.astype(int), use_container_width=True)
+
+            st.markdown("**Effectiveness % by solver × process:**")
+            pivot_eff_display = pivot_eff.loc[valid_solvers].round(1)
+            st.dataframe(pivot_eff_display, use_container_width=True)
 
     with st.expander("⏱️ Resolution Time Distribution"):
         res_data = df["Resolution Min"].dropna()
@@ -528,10 +596,26 @@ def render_ps_tab(df, total, dr):
         else:
             st.info("No resolution time data.")
 
-    with st.expander("📊 Events per Solver (Top 15)"):
-        st.pyplot(make_bar_horiz(
-            df["PS Display"].value_counts().head(15),
-            f"Events per Problem Solver ({dr})", color="steelblue"))
+    with st.expander("📊 Effectiveness Rate Chart (worst → best)"):
+        # Horizontal bar chart of eff rate, sorted worst to best
+        ps_chart = ps_data[ps_data["Total"] >= 3].sort_values("Eff Rate", ascending=True)
+        if len(ps_chart) > 0:
+            h = max(2, len(ps_chart)*0.3)
+            fig, ax = plt.subplots(figsize=(7, h))
+            colors = ["#e74c3c" if r < 50 else "#f39c12" if r < 70 else "#2ecc71" for r in ps_chart["Eff Rate"].values]
+            labs = trunc(ps_chart.index, LABEL_MAX)
+            ax.barh(labs, ps_chart["Eff Rate"].values, color=colors)
+            ax.invert_yaxis()
+            ax.set_xlim(0, 105)
+            for i, (rate, total_events) in enumerate(zip(ps_chart["Eff Rate"].values, ps_chart["Total"].values)):
+                ax.text(rate + 1, i, f"{rate}% ({int(total_events)} events)", va="center", fontsize=7)
+            ax.axvline(x=ps_chart["Eff Rate"].mean(), color="gray", linestyle="--", linewidth=1, alpha=0.7)
+            ax.set_xlabel("Effectiveness %", fontsize=8)
+            ax.set_title(f"Problem Solver Effectiveness — Worst → Best ({dr})", fontsize=9)
+            ax.tick_params(labelsize=7)
+            plt.tight_layout()
+            st.pyplot(fig)
+            st.caption("🔴 <50% | 🟠 50-70% | 🟢 >70% | Dashed line = average")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
