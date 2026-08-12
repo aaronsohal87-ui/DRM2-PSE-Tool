@@ -381,83 +381,101 @@ def render_cost(df, total, dr, kp=""):
 def render_holes(df, total, dr, kp=""):
     if total==0: st.warning("No data."); return
     st.markdown("### 🕳️ Holes in Problem Solve")
-    st.caption("Packages that slipped through — needed PS more than once. Categorised by what happened.")
+    st.caption("Systemic gaps — what's failing, what keeps coming back, and who needs support.")
 
+    # ─── BIGGEST GAPS (shown directly, no expander) ─────────────────────────
+    st.markdown("#### 📊 Biggest Gaps — Categories with Worst Effectiveness")
+    cat_eff = df.groupby("Category").agg(Total=("Scannable ID","count"), Effective=("Is Effective","sum"))
+    cat_eff["Ineffective"] = cat_eff["Total"] - cat_eff["Effective"]
+    cat_eff["Eff %"] = (cat_eff["Effective"]/cat_eff["Total"]*100).round(1)
+    cat_eff = cat_eff.sort_values("Eff %", ascending=True)
+    st.dataframe(cat_eff[["Total","Ineffective","Eff %"]], use_container_width=True)
+    worst_cat = cat_eff[cat_eff["Total"]>=5].head(3)
+    if len(worst_cat)>0:
+        st.markdown("**Focus areas (5+ events, lowest Eff%):**")
+        for name, row in worst_cat.iterrows():
+            st.markdown(f"- 🔴 **{name}**: {int(row['Ineffective'])} ineffective out of {int(row['Total'])} ({row['Eff %']}% effective)")
+
+    st.markdown("---")
+
+    # ─── REPEAT PACKAGES ────────────────────────────────────────────────────
+    st.markdown("#### 🔁 Packages Problem-Solved More Than Once")
     id_counts = df.groupby("Scannable ID").size()
     repeats = id_counts[id_counts>1].sort_values(ascending=False)
+
     if len(repeats)==0:
-        st.success("✅ No packages needed PS more than once."); return
+        st.success("✅ No packages needed PS more than once.")
+    else:
+        st.error(f"🚨 **{len(repeats)} packages** needed PS more than once.")
+        rdf = df[df["Scannable ID"].isin(repeats.index)].sort_values(["Scannable ID","Exception Open DT"])
 
-    st.error(f"🚨 **{len(repeats)} packages** were problem-solved more than once.")
-    rdf = df[df["Scannable ID"].isin(repeats.index)].sort_values(["Scannable ID","Exception Open DT"])
+        # Build comparison properly using iloc
+        comps = []
+        for tid in repeats.index:
+            evs = rdf[rdf["Scannable ID"]==tid].reset_index(drop=True)
+            if len(evs)<2: continue
+            effs = [evs.iloc[0]["Effective"], evs.iloc[1]["Effective"]]
+            pattern = " → ".join(["✓" if e=="Y" else "✗" for e in effs])
+            same = evs.iloc[0]["PS Display"]==evs.iloc[1]["PS Display"]
+            comps.append({
+                "Tracking ID":tid, "Pattern":pattern, "Same Associate":("⚠️ Yes" if same else "No"),
+                "1st Category":evs.iloc[0]["Category"], "1st Associate":evs.iloc[0]["PS Display"],
+                "2nd Category":evs.iloc[1]["Category"], "2nd Associate":evs.iloc[1]["PS Display"],
+            })
+        comp_df = pd.DataFrame(comps)
 
-    # Build comparison
-    comps = []
-    for tid in repeats.index:
-        evs = rdf[rdf["Scannable ID"]==tid].reset_index(drop=True)
-        effs = evs["Effective"].tolist()[:2]
-        pattern = " → ".join(["✓ Effective" if e=="Y" else "✗ Ineffective" for e in effs])
-        same = len(set(evs["PS Display"].tolist()[:2]))==1
-        row = {"Tracking ID":tid, "Pattern":pattern, "Same Associate":("⚠️ Yes" if same else "No"),
-               "1st Process":evs.iloc[0].get("Process",""), "1st Category":evs.iloc[0].get("Category",""),
-               "1st Associate":evs.iloc[0].get("PS Display",""), "1st Result":"Effective" if effs[0]=="Y" else "Ineffective"}
-        if len(evs)>1:
-            row.update({"2nd Process":evs.iloc[1].get("Process",""), "2nd Category":evs.iloc[1].get("Category",""),
-                        "2nd Associate":evs.iloc[1].get("PS Display",""), "2nd Result":"Effective" if effs[1]=="Y" else "Ineffective"})
-        comps.append(row)
-    comp_df = pd.DataFrame(comps)
-
-    with st.expander("📊 Pattern Summary", expanded=True):
+        # Pattern summary
         st.markdown("""
 | Pattern | Meaning | Concern |
 |---------|---------|---------|
-| ✗ Ineffective → ✗ Ineffective | Failed BOTH times — nobody fixed it | 🔴 Critical |
-| ✓ Effective → ✓ Effective | Marked fixed twice — why did it come back? | 🟠 Suspicious |
-| ✓ Effective → ✗ Ineffective | Fixed once, came back or fix didn't hold | 🟡 Investigate |
-| ✗ Ineffective → ✓ Effective | Failed first, fixed second — normal recovery | 🟢 OK |
+| ✗ → ✗ | Failed BOTH times — nobody fixed it | 🔴 Critical |
+| ✓ → ✓ | Marked fixed twice — why back? | 🟠 Suspicious |
+| ✓ → ✗ | Fixed once, came back | 🟡 Investigate |
+| ✗ → ✓ | Failed first, fixed second | 🟢 OK |
 """)
         pc = comp_df["Pattern"].value_counts()
         for pat, cnt in pc.items():
             same_n = comp_df[(comp_df["Pattern"]==pat)&(comp_df["Same Associate"]=="⚠️ Yes")].shape[0]
-            st.markdown(f"- **{pat}**: {cnt} packages ({same_n} same associate both times)")
+            st.markdown(f"- **{pat}**: {cnt} packages ({same_n} same associate)")
 
-    with st.expander("🔴 Never Fixed (Ineffective → Ineffective)"):
-        sub = comp_df[comp_df["Pattern"]=="✗ Ineffective → ✗ Ineffective"]
-        if len(sub)>0:
-            st.error(f"{len(sub)} packages failed BOTH PS attempts.")
-            st.dataframe(sub[["Tracking ID","Same Associate","1st Category","1st Associate","2nd Category","2nd Associate"]].reset_index(drop=True), use_container_width=True)
-        else: st.success("None.")
+        # Full table of all repeat packages (no expander — just show it)
+        st.markdown("**All repeat packages:**")
+        display_cols = ["Tracking ID","Pattern","Same Associate","1st Category","1st Associate","2nd Category","2nd Associate"]
+        st.dataframe(comp_df[display_cols].reset_index(drop=True), use_container_width=True, height=min(350, 35*len(comp_df)+40))
 
-    with st.expander("🟠 Came Back After 'Fix' (Effective → Effective)"):
-        sub = comp_df[comp_df["Pattern"]=="✓ Effective → ✓ Effective"]
-        if len(sub)>0:
-            st.warning(f"{len(sub)} packages marked effective TWICE. Why did they return?")
-            st.dataframe(sub[["Tracking ID","Same Associate","1st Category","1st Associate","2nd Category","2nd Associate"]].reset_index(drop=True), use_container_width=True)
-        else: st.success("None.")
+        st.markdown("---")
 
-    with st.expander("🟡 Fix Didn't Hold (Effective → Ineffective)"):
-        sub = comp_df[comp_df["Pattern"]=="✓ Effective → ✗ Ineffective"]
-        if len(sub)>0:
-            st.dataframe(sub[["Tracking ID","Same Associate","1st Category","1st Associate","2nd Category","2nd Associate"]].reset_index(drop=True), use_container_width=True)
-        else: st.success("None.")
+        # ─── PER ASSOCIATE: Why their packages came back ─────────────────────
+        st.markdown("#### 👤 Per Associate — Why Their Packages Came Back")
+        st.caption("Shows each associate whose first resolution didn't hold, and the reason the package was re-inducted. Source: 1st PS event per tracking ID + 2nd event category.")
 
-    with st.expander("🟢 Eventually Fixed (Ineffective → Effective)"):
-        sub = comp_df[comp_df["Pattern"]=="✗ Ineffective → ✓ Effective"]
-        if len(sub)>0:
-            st.dataframe(sub[["Tracking ID","Same Associate","1st Category","1st Associate","2nd Category","2nd Associate"]].reset_index(drop=True), use_container_width=True)
-        else: st.success("None.")
+        # Build per-associate reasons table
+        ps_reasons = []
+        for ps_name in comp_df["1st Associate"].value_counts().index:
+            theirs = comp_df[comp_df["1st Associate"]==ps_name]
+            reasons = theirs["2nd Category"].value_counts()
+            for reason, count in reasons.items():
+                ps_reasons.append({"Associate": ps_name, "Packages Came Back": count, "Came Back For": reason})
 
-    with st.expander("👤 Who is responsible for packages coming back?"):
-        st.caption("Associates who FIRST handled a package that later needed PS again. Source: first PS event per tracking ID.")
-        first = rdf.groupby("Scannable ID").first()["PS Display"].value_counts()
-        tbl = first.reset_index(); tbl.columns=["Associate","Packages Came Back"]; tbl.index=range(1,len(tbl)+1)
-        st.dataframe(tbl.head(15), use_container_width=True)
-        st.markdown("**Why did packages come back? (2nd attempt reasons):**")
-        second = rdf.groupby("Scannable ID").nth(1)
-        if len(second)>0:
-            reasons = second["Category"].value_counts()
-            tbl2 = reasons.reset_index(); tbl2.columns=["2nd Attempt Category","Count"]; tbl2.index=range(1,len(tbl2)+1)
-            st.dataframe(tbl2, use_container_width=True)
+        if ps_reasons:
+            ps_reasons_df = pd.DataFrame(ps_reasons).sort_values("Packages Came Back", ascending=False)
+            ps_reasons_df.index = range(1, len(ps_reasons_df)+1)
+            st.dataframe(ps_reasons_df, use_container_width=True)
+        else:
+            st.info("No repeat data to analyse.")
+
+    st.markdown("---")
+
+    # ─── INEFFECTIVE + CUSTOMER REFUND ───────────────────────────────────────
+    st.markdown("#### 📉 Ineffective PS with Customer Refund")
+    st.caption("Events where PS was ineffective AND a customer refund was issued. Source: `Effective (Y/N) = N` AND `gross_concession > 0`.")
+    bad = df[(~df["Is Effective"]) & (df["Cost (£)"]>0)].sort_values("Cost (£)", ascending=False)
+    if len(bad)>0:
+        st.error(f"{len(bad)} events — {fmt_cost(bad['Cost (£)'].sum())} total refunds on failed PS")
+        cols = [c for c in ["Scannable ID","Process","Category","PS Display","Shift","Cost (£)"] if c in bad.columns]
+        st.dataframe(bad[cols].head(20).reset_index(drop=True), use_container_width=True)
+    else:
+        st.success("✅ No ineffective events with customer refunds.")
 
 
 def render_trend(df, total, dr, kp=""):
