@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
 import numpy as np
-from scipy import stats as sp_stats
 from io import BytesIO
 
 st.set_page_config(page_title="DRM2 PSE Heatmap", page_icon="🔧", layout="wide")
@@ -48,7 +47,6 @@ def assign_shift_pse(row):
     return "Unknown"
 
 def get_solver_shift(df):
-    """Which shift does each solver mostly work?"""
     return df.groupby("PS Display")["Shift"].agg(
         lambda x: x.mode().iloc[0] if len(x.mode()) > 0 else "Unknown"
     ).to_dict()
@@ -74,7 +72,8 @@ def get_date_range(df):
             return s if s == e else f"{s} – {e}"
     return ""
 
-def make_bar_horiz(data, title, color="steelblue"):
+def make_bar_horiz(data, title, color="steelblue", max_bars=10):
+    data = data.head(max_bars)
     if len(data) == 0: return plt.subplots(figsize=(7, 2))[0]
     h = max(2, len(data)*0.3)
     fig, ax = plt.subplots(figsize=(7, h))
@@ -100,8 +99,7 @@ def make_bar_shift(data, title):
     ax.set_title(title, fontsize=9); ax.tick_params(labelsize=7); plt.tight_layout()
     return fig
 
-def make_eff_bar(df, group_col, title, top_n=15):
-    """Stacked bar: green = effective, red = ineffective."""
+def make_eff_bar(df, group_col, title, top_n=10):
     grouped = df.groupby(group_col).agg(
         Total=("Scannable ID", "count"), Effective=("Is Effective", "sum")
     ).sort_values("Total", ascending=False).head(top_n)
@@ -136,11 +134,6 @@ def clean_pse(df):
             df[col + "_DT"] = pd.to_datetime(df[col], dayfirst=True, errors="coerce")
     if "Exception Open Time_DT" in df.columns: df["Exception Open DT"] = df["Exception Open Time_DT"]
     if "PSS Event Time_DT" in df.columns: df["PSS Event DT"] = df["PSS Event Time_DT"]
-    if "Resolution Time_DT" in df.columns: df["Resolution DT"] = df["Resolution Time_DT"]
-    if "Resolution time taken(min)" in df.columns:
-        df["Time to Fix (min)"] = pd.to_numeric(df["Resolution time taken(min)"].astype(str).str.replace(",",""), errors="coerce")
-    else:
-        df["Time to Fix (min)"] = float("nan")
     if "gross_concession" in df.columns:
         df["Cost (£)"] = pd.to_numeric(df["gross_concession"].astype(str).str.replace("[£$,]","",regex=True), errors="coerce").fillna(0)
     else:
@@ -181,11 +174,6 @@ def filter_uk_ids(df):
     mask = df["Scannable ID"].astype(str).str.strip().str.startswith("UK")
     return df[mask].copy(), (~mask).sum()
 
-
-# ═══════════════════════════════════════════════════════════════════════════════
-# HEALTH SCORE
-# ═══════════════════════════════════════════════════════════════════════════════
-
 def compute_health_score(df, total):
     if total == 0: return 5, "🟡", "No data", []
     score = 10; reasons = []
@@ -212,17 +200,21 @@ def compute_health_score(df, total):
 def render_summary_tab(df, total, dr):
     if total == 0: st.warning("No data."); return
 
-    # ─── IDs for SCC ──────────────────────────────────────────────────────────
-    with st.expander("📋 Tracking IDs — Copy into SCC for location data"):
-        st.markdown("**Select all → Copy → Paste into SCC search box → Export SCC CSV → Upload here.**")
+    with st.expander("📋 Tracking IDs — Copy into SCC", expanded=False):
+        st.markdown("""
+**To get location data (cluster, aisle, sort zone):**
+1. Select all the IDs below (click in box → Ctrl+A)
+2. Copy (Ctrl+C)
+3. Paste into SCC search → Export as CSV
+4. Upload that CSV here as the SCC file
+""")
         uk_ids = sorted(df[df["Scannable ID"].astype(str).str.startswith("UK")]["Scannable ID"].astype(str).str.strip().unique())
         if len(uk_ids) > 0:
-            st.caption(f"{len(uk_ids)} unique UK IDs (non-UK removed automatically)")
+            st.caption(f"{len(uk_ids)} unique UK IDs")
             st.code("\n".join(uk_ids), language=None)
         else:
-            st.warning("No UK IDs in current data.")
+            st.warning("No UK IDs.")
 
-    # ─── By Process ───────────────────────────────────────────────────────────
     with st.expander("📦 By Process", expanded=True):
         proc = df.groupby("Process").agg(
             Total=("Scannable ID","count"), Effective=("Is Effective","sum"), SLA=("SLA Met","sum")
@@ -240,22 +232,9 @@ def render_summary_tab(df, total, dr):
                        autopct="%1.0f%%", startangle=90, textprops={"fontsize":7})
                 ax.set_title(f"By Process ({dr})", fontsize=8); plt.tight_layout(); st.pyplot(fig)
 
-    # ─── By Category ──────────────────────────────────────────────────────────
     with st.expander("🏷️ By Category", expanded=True):
         st.pyplot(make_eff_bar(df, "Category", f"Categories ({dr})"))
 
-    # ─── By Shift ─────────────────────────────────────────────────────────────
-    with st.expander("⏰ By Shift"):
-        sd = df[df["Shift"].isin(SHIFT_ORDER)].groupby("Shift").agg(
-            Total=("Scannable ID","count"), Effective=("Is Effective","sum")
-        ).reindex(SHIFT_ORDER, fill_value=0)
-        sd["Ineffective"] = sd["Total"] - sd["Effective"]
-        sd["Eff %"] = (sd["Effective"]/sd["Total"]*100).round(1)
-        sd["Window"] = [SHIFT_DEFINITIONS.get(s,"") for s in sd.index]
-        st.dataframe(sd[["Total","Effective","Ineffective","Eff %","Window"]], use_container_width=True)
-        st.pyplot(make_bar_shift(df[df["Shift"].isin(SHIFT_ORDER)]["Shift"].value_counts().reindex(SHIFT_ORDER, fill_value=0), f"By Shift ({dr})"))
-
-    # ─── Hour of Day ──────────────────────────────────────────────────────────
     with st.expander("🕐 Hour of Day"):
         if "Exception Open DT" in df.columns:
             hours = df["Exception Open DT"].dropna().dt.hour
@@ -271,39 +250,84 @@ def render_summary_tab(df, total, dr):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB: LOCATIONS
+# TAB: LOCATIONS (Cluster drill-down focused)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def render_locations_tab(df, total, dr):
     if total == 0: st.warning("No data."); return
     has_scc = "Cluster" in df.columns and df["Cluster"].notna().any()
+
     if not has_scc:
-        st.warning("⚠️ No SCC uploaded — go to Summary tab → copy IDs → paste into SCC → export → upload here.")
-        if "Route" in df.columns and df["Route"].notna().any():
-            st.pyplot(make_eff_bar(df[df["Route"].notna()], "Route", f"By Route ({dr})", top_n=20))
+        st.warning("⚠️ No SCC data. Go to **Summary** tab → copy tracking IDs → paste into SCC → export CSV → upload here.")
         return
 
-    with st.expander("📍 By Cluster", expanded=True):
-        st.pyplot(make_eff_bar(df[df["Cluster"].notna()], "Cluster", f"By Cluster ({dr})"))
+    # Overview: top clusters chart
+    with st.expander("📍 Cluster Overview (top 10)", expanded=True):
+        st.pyplot(make_eff_bar(df[df["Cluster"].notna()], "Cluster", f"Top 10 Clusters ({dr})", top_n=10))
 
-    with st.expander("🏷️ By Aisle"):
-        if df["Aisle"].notna().any():
-            st.pyplot(make_eff_bar(df[df["Aisle"].notna()], "Aisle", f"By Aisle ({dr})", top_n=20))
+    # Main view: drill into a cluster
+    st.markdown("### 🔍 Cluster Deep Dive")
+    st.caption("Select a cluster to see everything inside it — aisles, categories, which shift, who's solving there.")
+    clusters = df["Cluster"].dropna().value_counts()
+    cluster_list = clusters.index.tolist()
 
-    with st.expander("🗂️ By Sort Zone"):
-        if "Sort Zone" in df.columns and df["Sort Zone"].notna().any():
-            st.pyplot(make_eff_bar(df[df["Sort Zone"].notna()], "Sort Zone", f"By Sort Zone ({dr})"))
+    if cluster_list:
+        sel = st.selectbox("Select cluster:", cluster_list, format_func=lambda x: f"{x} ({int(clusters[x])} events)", key="drill_cl")
+        filt = df[df["Cluster"] == sel]
+        eff_n = int(filt["Is Effective"].sum())
+        ineff_n = len(filt) - eff_n
 
-    with st.expander("🔍 Drill into a Cluster"):
-        clusters = sorted(df["Cluster"].dropna().unique().tolist())
-        if clusters:
-            sel = st.selectbox("Pick a cluster:", clusters, key="drill_cl")
-            filt = df[df["Cluster"]==sel]
-            e = int(filt["Is Effective"].sum())
-            st.write(f"**{len(filt)} events** — {e} effective ({fmt_pct(e,len(filt))})")
-            if filt["Aisle"].notna().any():
-                st.pyplot(make_bar_horiz(filt["Aisle"].dropna().value_counts(), f"{sel} — Aisles"))
-            st.pyplot(make_bar_horiz(filt["Category"].dropna().value_counts(), f"{sel} — Categories", color="purple"))
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Events", len(filt))
+        c2.metric("Effective", f"{eff_n} ({fmt_pct(eff_n, len(filt))})")
+        c3.metric("Ineffective", f"{ineff_n} ({fmt_pct(ineff_n, len(filt))})")
+
+        # Aisles table (NOT graph — too many aisles)
+        st.markdown("**Aisles in this cluster:**")
+        if "Aisle" in filt.columns and filt["Aisle"].notna().any():
+            aisle_data = filt.groupby("Aisle").agg(
+                Events=("Scannable ID","count"), Effective=("Is Effective","sum")
+            ).sort_values("Events", ascending=False)
+            aisle_data["Ineffective"] = aisle_data["Events"] - aisle_data["Effective"]
+            aisle_data["Eff %"] = (aisle_data["Effective"]/aisle_data["Events"]*100).round(1)
+            aisle_data.index.name = "Aisle"
+            st.dataframe(aisle_data[["Events","Effective","Ineffective","Eff %"]], use_container_width=True)
+        else:
+            st.info("No aisle data for this cluster.")
+
+        # Categories in this cluster
+        st.markdown("**What's going wrong here:**")
+        cat_data = filt.groupby("Category").agg(
+            Events=("Scannable ID","count"), Effective=("Is Effective","sum")
+        ).sort_values("Events", ascending=False)
+        cat_data["Ineffective"] = cat_data["Events"] - cat_data["Effective"]
+        cat_data["Eff %"] = (cat_data["Effective"]/cat_data["Events"]*100).round(1)
+        st.dataframe(cat_data[["Events","Effective","Ineffective","Eff %"]], use_container_width=True)
+
+        # Which shift
+        st.markdown("**Which shift:**")
+        shift_data = filt[filt["Shift"].isin(SHIFT_ORDER)].groupby("Shift").agg(
+            Events=("Scannable ID","count"), Effective=("Is Effective","sum")
+        ).reindex(SHIFT_ORDER, fill_value=0)
+        shift_data["Eff %"] = (shift_data["Effective"]/shift_data["Events"]*100).round(1)
+        shift_data["Window"] = [SHIFT_DEFINITIONS.get(s,"") for s in shift_data.index]
+        st.dataframe(shift_data[["Events","Effective","Eff %","Window"]], use_container_width=True)
+
+        # Who is solving in this cluster
+        st.markdown("**Who is problem-solving here:**")
+        ps_in_cluster = filt.groupby("PS Display").agg(
+            Events=("Scannable ID","count"), Effective=("Is Effective","sum")
+        ).sort_values("Events", ascending=False)
+        ps_in_cluster["Ineffective"] = ps_in_cluster["Events"] - ps_in_cluster["Effective"]
+        ps_in_cluster["Eff %"] = (ps_in_cluster["Effective"]/ps_in_cluster["Events"]*100).round(1)
+        st.dataframe(ps_in_cluster[["Events","Effective","Ineffective","Eff %"]].head(10), use_container_width=True)
+
+        # Sort Zone (if available)
+        if "Sort Zone" in filt.columns and filt["Sort Zone"].notna().any():
+            st.markdown("**Sort Zones:**")
+            sz = filt["Sort Zone"].dropna().value_counts()
+            tbl = sz.reset_index(); tbl.columns = ["Sort Zone","Events"]; tbl.index = range(1,len(tbl)+1)
+            st.dataframe(tbl, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -311,12 +335,21 @@ def render_locations_tab(df, total, dr):
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def render_ps_tab(df, total, dr):
-    """
-    Shows all problem solvers ranked from worst to best by Eff%.
-    Also flags those with worst SLA%.
-    Shift shown so managers know who to speak to and when.
-    """
     if total == 0: st.warning("No data."); return
+
+    # DATA SOURCE NOTICE
+    st.markdown("""
+> ⚠️ **Data accuracy notice**
+>
+> This data comes directly from the **PSE Dashboard CSV export**.
+> - **Associate name** = `Problem_Solver` column in the CSV
+> - **Eff %** = events marked `Y` in `Effective (Y/N)` column ÷ total events × 100
+> - **SLA %** = events marked `Y` in `SLA (Y/N)` column ÷ total events × 100
+> - **Shift** = determined by the hour of `Exception Open Time` (when the PS event was created)
+>
+> **Before taking action:** Verify with the associate. System errors, misattributed scans,
+> or shared logins can cause incorrect data. This is a starting point for investigation, not proof.
+""")
 
     solver_shifts = get_solver_shift(df)
 
@@ -331,105 +364,91 @@ def render_ps_tab(df, total, dr):
     ps["SLA %"] = (ps["SLA"]/ps["Total"]*100).round(1)
     ps["Shift"] = ps.index.map(lambda x: solver_shifts.get(x, "?"))
 
-    # Only rank those with 3+ events
-    ranked = ps[ps["Total"] >= 3].sort_values("Eff %", ascending=True).copy()
+    # Sort: 0% effective first (never resolved anything), then ascending by Eff%
+    ranked = ps[ps["Total"] >= 3].copy()
+    # Put 0% at top, then sort rest ascending
+    ranked["_sort"] = ranked["Eff %"]
+    ranked = ranked.sort_values("_sort", ascending=True).drop(columns=["_sort"])
 
-    with st.expander("👤 All Associates — Worst → Best (3+ events)", expanded=True):
-        st.caption("Sorted by effectiveness % (lowest at top). Shift = their usual working shift. Talk to the people at the top.")
+    with st.expander("👤 All Associates — Ranked (3+ events)", expanded=True):
+        st.caption("Associates with **0% effectiveness** (never resolved a single package) are at the top. Then sorted worst → best.")
         if len(ranked) > 0:
             avg_eff = ranked["Eff %"].mean()
             avg_sla = ranked["SLA %"].mean()
             st.markdown(f"**Team average: {avg_eff:.0f}% effective | {avg_sla:.0f}% SLA**")
+
+            # Highlight the 0% people
+            zero_eff = ranked[ranked["Eff %"] == 0]
+            if len(zero_eff) > 0:
+                st.error(f"🚨 **{len(zero_eff)} associate(s) with 0% effectiveness** — never resolved a single package:")
+                for name, row in zero_eff.iterrows():
+                    st.markdown(f"- **{name}** [{row['Shift']} shift] — {int(row['Total'])} events, 0 effective")
+
             display = ranked[["Shift","Total","Effective","Ineffective","Eff %","SLA %"]].reset_index()
             display = display.rename(columns={"PS Display":"Associate"})
             display.index = range(1, len(display)+1)
             display.index.name = "Rank"
             st.dataframe(display, use_container_width=True, height=min(700, 35*len(display)+40))
 
-    with st.expander("🔴 Flagged — Need Coaching (Eff % below average)", expanded=True):
+    with st.expander("🔴 Flagged — Below Average"):
         if len(ranked) >= 3:
             avg_eff = ranked["Eff %"].mean()
-            flagged = ranked[ranked["Eff %"] < avg_eff - 10]
-            if len(flagged) > 0:
-                st.error(f"🚨 {len(flagged)} associate(s) more than 10pp below average ({avg_eff:.0f}%):")
-                for name, row in flagged.iterrows():
-                    st.markdown(f"- **{name}** [{row['Shift']} shift]: **{row['Eff %']}%** effective ({int(row['Ineffective'])} ineffective out of {int(row['Total'])})")
-            else:
-                st.success(f"✅ No one significantly below average ({avg_eff:.0f}%).")
-
-    with st.expander("🔴 Flagged — Worst SLA % (slowest to resolve)"):
-        st.caption("SLA = did they resolve the problem within the allowed time? These associates are the slowest.")
-        if len(ranked) >= 3:
             avg_sla = ranked["SLA %"].mean()
+
+            st.markdown("**Below average effectiveness:**")
+            flagged_eff = ranked[ranked["Eff %"] < avg_eff - 10]
+            if len(flagged_eff) > 0:
+                for name, row in flagged_eff.iterrows():
+                    st.markdown(f"- **{name}** [{row['Shift']}]: **{row['Eff %']}%** eff ({int(row['Total'])} events)")
+            else:
+                st.success(f"✅ Nobody >10pp below average ({avg_eff:.0f}%).")
+
+            st.markdown("**Below average SLA:**")
             flagged_sla = ranked[ranked["SLA %"] < avg_sla - 10]
             if len(flagged_sla) > 0:
-                st.error(f"🚨 {len(flagged_sla)} associate(s) more than 10pp below SLA average ({avg_sla:.0f}%):")
                 for name, row in flagged_sla.iterrows():
-                    st.markdown(f"- **{name}** [{row['Shift']} shift]: **{row['SLA %']}%** SLA ({int(row['Total'])} events)")
+                    st.markdown(f"- **{name}** [{row['Shift']}]: **{row['SLA %']}%** SLA ({int(row['Total'])} events)")
             else:
-                st.success(f"✅ No one significantly below SLA average ({avg_sla:.0f}%).")
+                st.success(f"✅ Nobody >10pp below SLA average ({avg_sla:.0f}%).")
 
-    with st.expander("📊 What does each associate handle?"):
-        st.caption("Shows which processes each person works on and their effectiveness for each.")
-        ps_proc = df.groupby(["PS Display","Process"]).agg(
-            Total=("Scannable ID","count"), Effective=("Is Effective","sum")
-        ).reset_index()
-        ps_proc["Eff %"] = (ps_proc["Effective"]/ps_proc["Total"]*100).round(1)
-        pivot = ps_proc.pivot_table(index="PS Display", columns="Process", values="Total", fill_value=0)
-        valid = pivot[pivot.sum(axis=1) >= 3].sort_values(by=pivot.columns.tolist(), ascending=False)
-        if len(valid) > 0:
-            st.markdown("**Event count by associate × process:**")
-            st.dataframe(valid.astype(int), use_container_width=True)
-
-    with st.expander("🎯 Where are they failing? (Category × Associate)"):
-        st.caption("Which categories each associate is worst at. Only shows combos with 3+ events.")
+    with st.expander("🎯 Where are they failing? (Category breakdown)"):
+        st.caption("Which categories each associate is worst at. Only combos with 3+ events shown.")
         ps_cat = df.groupby(["PS Display","Category"]).agg(
             Total=("Scannable ID","count"), Effective=("Is Effective","sum")
         ).reset_index()
         ps_cat["Eff %"] = (ps_cat["Effective"]/ps_cat["Total"]*100).round(1)
-        worst_combos = ps_cat[ps_cat["Total"]>=3].sort_values("Eff %", ascending=True).head(20)
-        if len(worst_combos) > 0:
-            worst_combos["Ineffective"] = worst_combos["Total"] - worst_combos["Effective"]
-            out = worst_combos[["PS Display","Category","Total","Ineffective","Eff %"]].rename(columns={"PS Display":"Associate"})
+        worst = ps_cat[ps_cat["Total"]>=3].sort_values("Eff %", ascending=True).head(20)
+        if len(worst) > 0:
+            worst["Ineffective"] = worst["Total"] - worst["Effective"]
+            out = worst[["PS Display","Category","Total","Ineffective","Eff %"]].rename(columns={"PS Display":"Associate"})
             out.index = range(1, len(out)+1)
             st.dataframe(out, use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB: TIME & CYCLES
+# TAB: CYCLES
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def render_time_tab(df, total, dr):
+def render_cycles_tab(df, total, dr):
     if total == 0: st.warning("No data."); return
 
-    with st.expander("🔄 By Cycle", expanded=True):
+    with st.expander("🔄 By Actual Cycle", expanded=True):
         if "Actual Cycle" in df.columns:
-            cyc = df.groupby("Actual Cycle").agg(Total=("Scannable ID","count"), Effective=("Is Effective","sum")).sort_values("Total", ascending=False)
+            cyc = df.groupby("Actual Cycle").agg(
+                Total=("Scannable ID","count"), Effective=("Is Effective","sum"), SLA=("SLA Met","sum")
+            ).sort_values("Total", ascending=False)
+            cyc["Ineffective"] = cyc["Total"] - cyc["Effective"]
             cyc["Eff %"] = (cyc["Effective"]/cyc["Total"]*100).round(1)
-            st.dataframe(cyc[["Total","Effective","Eff %"]], use_container_width=True)
-            st.pyplot(make_bar_horiz(df["Actual Cycle"].dropna().value_counts(), f"By Cycle ({dr})", color="teal"))
+            cyc["SLA %"] = (cyc["SLA"]/cyc["Total"]*100).round(1)
+            st.dataframe(cyc[["Total","Effective","Ineffective","Eff %","SLA %"]], use_container_width=True)
 
-    with st.expander("⏰ Shift Table"):
-        st.caption("NS: 23:45–09:45 | AM: 09:45–14:00 | PM: 14:00–23:45")
-        se = df[df["Shift"].isin(SHIFT_ORDER)].groupby("Shift").agg(
-            Total=("Scannable ID","count"), Effective=("Is Effective","sum"), SLA=("SLA Met","sum")
-        ).reindex(SHIFT_ORDER, fill_value=0)
-        se["Eff %"] = (se["Effective"]/se["Total"]*100).round(1)
-        se["SLA %"] = (se["SLA"]/se["Total"]*100).round(1)
-        se["Window"] = [SHIFT_DEFINITIONS.get(s,"") for s in se.index]
-        st.dataframe(se[["Total","Effective","Eff %","SLA %","Window"]], use_container_width=True)
-
-    with st.expander("🕐 Hour of Day"):
-        if "Exception Open DT" in df.columns:
-            hours = df["Exception Open DT"].dropna().dt.hour
-            if len(hours) > 0:
-                hc = hours.value_counts().sort_index().reindex(range(24), fill_value=0)
-                fig, ax = plt.subplots(figsize=(8,2.5))
-                ax.bar(range(24), hc.values, color=[SHIFT_COLORS.get(SHIFT_HOUR_MAP.get(h,""),"gray") for h in range(24)])
-                for h in range(24):
-                    if hc.values[h]>0: ax.text(h, hc.values[h]+0.1, str(int(hc.values[h])), ha="center", fontsize=6)
-                ax.set_xlabel("Hour", fontsize=8); ax.set_ylabel("Events", fontsize=8)
-                ax.set_xticks(range(24)); ax.tick_params(labelsize=7); plt.tight_layout(); st.pyplot(fig)
+    with st.expander("📅 By Planned Cycle"):
+        if "Planned Cycle" in df.columns:
+            pc = df.groupby("Planned Cycle").agg(
+                Total=("Scannable ID","count"), Effective=("Is Effective","sum")
+            ).sort_values("Total", ascending=False)
+            pc["Eff %"] = (pc["Effective"]/pc["Total"]*100).round(1)
+            st.dataframe(pc[["Total","Effective","Eff %"]], use_container_width=True)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -438,14 +457,27 @@ def render_time_tab(df, total, dr):
 
 def render_cost_tab(df, total, dr):
     if total == 0: st.warning("No data."); return
+
     tc = df["Cost (£)"].sum()
     with_cost = (df["Cost (£)"]>0).sum()
     dea = int(df["DEA Miss"].sum())
 
     c1, c2, c3 = st.columns(3)
     c1.metric("Total Concession Cost", fmt_cost(tc))
-    c2.metric("Events with Cost", with_cost)
+    c2.metric("Events with Concession", with_cost)
     c3.metric("DEA Misses", dea)
+
+    with st.expander("💰 What is concession cost?", expanded=False):
+        st.markdown("""
+**Concession cost** = money Amazon refunded to the customer because of this issue.
+
+This comes from the `gross_concession` column in the PSE export. If a package was
+damaged, lost, or delayed because of a PS failure, the customer may get a refund —
+that's the concession.
+
+- **"Cost (Ineffective)"** = total concessions on events where the associate marked the PS as NOT effective
+- **"Cost (Effective)"** = total concessions on events where PS WAS effective (issue still cost money but was handled correctly)
+""")
 
     with st.expander("💰 Cost by Category", expanded=True):
         cdf = df[df["Cost (£)"]>0]
@@ -453,26 +485,36 @@ def render_cost_tab(df, total, dr):
             cc = cdf.groupby("Category").agg(Events=("Scannable ID","count"), Cost=("Cost (£)","sum")).sort_values("Cost", ascending=False).reset_index()
             cc["Avg"] = (cc["Cost"]/cc["Events"]).apply(fmt_cost); cc["Cost"] = cc["Cost"].apply(fmt_cost)
             cc.index = range(1,len(cc)+1); st.dataframe(cc, use_container_width=True)
+        else:
+            st.info("No concession costs in this data.")
 
-    with st.expander("💰 Cost of Ineffective PS"):
-        st.caption("How much money is lost when PS fails? This is concession cost on events where the problem solver was NOT effective.")
+    with st.expander("💰 Cost: Effective vs Ineffective PS"):
         ineff_cost = df[~df["Is Effective"]]["Cost (£)"].sum()
         eff_cost = df[df["Is Effective"]]["Cost (£)"].sum()
         c1, c2 = st.columns(2)
-        c1.metric("Cost (Effective)", fmt_cost(eff_cost))
-        c2.metric("Cost (Ineffective)", fmt_cost(ineff_cost))
+        c1.metric("Cost (PS was effective)", fmt_cost(eff_cost))
+        c2.metric("Cost (PS was ineffective)", fmt_cost(ineff_cost))
         if ineff_cost > 0:
-            st.error(f"💡 **{fmt_cost(ineff_cost)}** lost on events where PS failed. This is preventable.")
+            st.error(f"💡 **{fmt_cost(ineff_cost)}** in customer refunds where PS failed. Better PS could have prevented some of this.")
 
-    with st.expander("🎯 DEA Misses"):
+    # DEA MISSES — organised by shift with drill-down
+    with st.expander("🎯 DEA Misses — By Shift", expanded=True):
+        st.caption("DEA Miss = package wasn't dispatched when it should have been. Organised by shift so you know when it happened.")
         dea_events = df[df["DEA Miss"]>0]
         if len(dea_events) > 0:
             st.error(f"🚨 {len(dea_events)} event(s) with DEA misses")
-            if "dea_bucket" in df.columns:
-                db = dea_events["dea_bucket"].dropna().value_counts()
-                if len(db)>0: st.pyplot(make_bar_horiz(db, "DEA Buckets", color="darkred"))
-            cols = [c for c in ["Scannable ID","Process","Category","PS Display","Shift","dea_bucket"] if c in dea_events.columns]
-            st.dataframe(dea_events[cols].reset_index(drop=True), use_container_width=True)
+
+            # By shift summary
+            dea_by_shift = dea_events[dea_events["Shift"].isin(SHIFT_ORDER)].groupby("Shift").size().reindex(SHIFT_ORDER, fill_value=0)
+            st.pyplot(make_bar_shift(dea_by_shift, "DEA Misses by Shift"))
+
+            # Drill down per shift
+            for s in SHIFT_ORDER:
+                s_events = dea_events[dea_events["Shift"]==s]
+                if len(s_events) > 0:
+                    with st.expander(f"{s} shift — {len(s_events)} DEA miss(es) ({SHIFT_DEFINITIONS[s]})"):
+                        cols = [c for c in ["Scannable ID","Process","Category","PS Display","dea_bucket","Status"] if c in s_events.columns]
+                        st.dataframe(s_events[cols].reset_index(drop=True), use_container_width=True)
         else:
             st.success("✅ No DEA misses.")
 
@@ -483,57 +525,48 @@ def render_cost_tab(df, total, dr):
 
 def render_holes_tab(df, total, dr):
     if total == 0: st.warning("No data."); return
-    st.markdown("### 🕳️ Finding Holes in Problem Solve")
-    st.caption("Systemic issues — things that keep going wrong or aren't being fixed properly.")
+    st.markdown("### 🕳️ Holes in Problem Solve")
+    st.caption("Packages that slipped through the cracks — systemic issues nobody fixed properly.")
 
-    with st.expander("🔁 Same Package, Multiple PS Events", expanded=True):
-        st.caption("If a package was problem-solved more than once, nobody actually fixed it the first time.")
+    # REPEAT PS EVENTS — show what both attempts were
+    with st.expander("🔁 Same Package, Problem-Solved More Than Once", expanded=True):
+        st.caption("If a package needed PS twice, the first attempt didn't work. This shows both attempts side by side.")
         id_counts = df.groupby("Scannable ID").size()
         repeats = id_counts[id_counts > 1].sort_values(ascending=False)
+
         if len(repeats) > 0:
-            st.error(f"🚨 **{len(repeats)} packages** needed PS more than once!")
-            rdf = df[df["Scannable ID"].isin(repeats.index)].sort_values(["Scannable ID","Exception Open DT"])
-            cols = [c for c in ["Scannable ID","Process","Category","Effective","PS Display","Shift","Status"] if c in rdf.columns]
-            st.dataframe(rdf[cols].reset_index(drop=True), use_container_width=True, height=300)
-        else:
-            st.success("✅ No repeat PS events.")
+            st.error(f"🚨 **{len(repeats)} packages** needed problem-solve more than once.")
 
-    with st.expander("⏳ Never Resolved"):
-        st.caption("Events with no resolution recorded — may have been abandoned or forgotten.")
-        unresolved = df[df["Time to Fix (min)"].isna()]
-        if len(unresolved) > 0:
-            st.warning(f"⚠️ **{len(unresolved)} events** ({fmt_pct(len(unresolved), total)}) have no resolution.")
-            ur_ps = unresolved["PS Display"].value_counts().head(10)
-            st.markdown("**Who leaves events unresolved:**")
-            tbl = ur_ps.reset_index(); tbl.columns = ["Associate","Unresolved"]; tbl.index = range(1,len(tbl)+1)
-            st.dataframe(tbl, use_container_width=True)
-        else:
-            st.success("✅ All events resolved.")
+            repeat_ids = repeats.index.tolist()
+            rdf = df[df["Scannable ID"].isin(repeat_ids)].sort_values(["Scannable ID", "Exception Open DT"])
 
-    with st.expander("❌ SLA Misses — Who & What"):
-        st.caption("SLA = did they fix the problem within the allowed time window? These events missed it.")
-        sla_miss = df[~df["SLA Met"]]
-        if len(sla_miss) > 0:
-            st.warning(f"⚠️ **{len(sla_miss)} SLA misses** ({fmt_pct(len(sla_miss), total)})")
-            c1, c2 = st.columns(2)
-            with c1:
-                st.markdown("**By Associate:**")
-                sp = sla_miss["PS Display"].value_counts().head(10)
-                tbl = sp.reset_index(); tbl.columns = ["Associate","Misses"]; tbl.index = range(1,len(tbl)+1)
-                st.dataframe(tbl, use_container_width=True)
-            with c2:
-                st.markdown("**By Category:**")
-                sc = sla_miss["Category"].value_counts().head(10)
-                tbl2 = sc.reset_index(); tbl2.columns = ["Category","Misses"]; tbl2.index = range(1,len(tbl2)+1)
-                st.dataframe(tbl2, use_container_width=True)
-        else:
-            st.success("✅ No SLA misses.")
+            # Build comparison table — attempt 1 vs attempt 2
+            comparisons = []
+            for tid in repeat_ids:
+                events = rdf[rdf["Scannable ID"]==tid].reset_index(drop=True)
+                row = {"Tracking ID": tid}
+                for i, (_, ev) in enumerate(events.iterrows()):
+                    n = i + 1
+                    row[f"Attempt {n} Process"] = ev.get("Process", "")
+                    row[f"Attempt {n} Category"] = ev.get("Category", "")
+                    row[f"Attempt {n} Associate"] = ev.get("PS Display", "")
+                    row[f"Attempt {n} Effective"] = ev.get("Effective", "")
+                    row[f"Attempt {n} Shift"] = ev.get("Shift", "")
+                    if n >= 2: break  # show first 2
+                comparisons.append(row)
 
-    with st.expander("📉 Ineffective + Concession Cost"):
-        st.caption("The worst outcomes — PS failed AND it cost money (customer concession).")
+            comp_df = pd.DataFrame(comparisons)
+            st.dataframe(comp_df, use_container_width=True, height=min(400, 35*len(comp_df)+40))
+            st.caption(f"Total: {len(repeats)} packages with 2+ PS events")
+        else:
+            st.success("✅ No packages needed PS more than once.")
+
+    # INEFFECTIVE + COST
+    with st.expander("📉 Worst Outcomes — Failed PS + Customer Got Refund"):
+        st.caption("PS was ineffective AND Amazon had to refund the customer. Sorted by cost (highest first).")
         bad = df[(~df["Is Effective"]) & (df["Cost (£)"]>0)].sort_values("Cost (£)", ascending=False)
         if len(bad) > 0:
-            st.error(f"🚨 **{len(bad)} events** failed PS + cost money (total: {fmt_cost(bad['Cost (£)'].sum())})")
+            st.error(f"🚨 {len(bad)} events — total cost: {fmt_cost(bad['Cost (£)'].sum())}")
             cols = [c for c in ["Scannable ID","Process","Category","PS Display","Shift","Cost (£)"] if c in bad.columns]
             st.dataframe(bad[cols].head(20).reset_index(drop=True), use_container_width=True)
         else:
@@ -541,93 +574,64 @@ def render_holes_tab(df, total, dr):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# TAB: ANALYSIS & TREND
+# TAB: TREND
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def render_analysis_tab(df, total, dr):
+def render_trend_tab(df, total, dr):
     if total == 0: st.warning("No data."); return
-    view = st.selectbox("View:", ["🔬 Analysis", "📈 Trend"], key="at_view")
 
-    if view == "🔬 Analysis":
-        st.markdown("### 🔬 Key Findings")
-        st.caption("Data-driven — use your own judgement.")
-        actions = []
+    st.markdown("### 📈 Week-over-Week Trend")
+    st.markdown("""
+**How this works:**
 
-        with st.expander("📍 Where are problems?", expanded=True):
-            has_scc = "Cluster" in df.columns and df["Cluster"].notna().any()
-            if has_scc:
-                cl = df["Cluster"].dropna().value_counts()
-                if len(cl) >= 2:
-                    top5 = cl.head(5)
-                    pct = round(top5.sum()/cl.sum()*100,1)
-                    st.markdown(f"**Top 5 clusters = {pct}% of all events**")
-                    for name, count in top5.items():
-                        cdf = df[df["Cluster"]==name]
-                        eff = cdf["Is Effective"].mean()*100
-                        cat = cdf["Category"].value_counts().index[0] if len(cdf["Category"].dropna())>0 else "?"
-                        st.markdown(f"- **{name}**: {int(count)} events, {eff:.0f}% eff — mainly: {cat}")
-                    actions.append(f"Walk {', '.join(top5.index[:3])}")
-            else:
-                st.info("Upload SCC for location analysis.")
+You track your PSE numbers over multiple weeks to see if things are getting better or worse.
 
-        with st.expander("📊 Worst categories"):
-            ce = df.groupby("Category").agg(Total=("Scannable ID","count"), Effective=("Is Effective","sum")).sort_values("Total", ascending=False)
-            ce["Eff %"] = (ce["Effective"]/ce["Total"]*100).round(1)
-            worst = ce[ce["Total"]>=5].sort_values("Eff %").head(3)
-            if len(worst)>0:
-                for name, row in worst.iterrows():
-                    st.markdown(f"- **{name}**: {row['Eff %']}% eff ({int(row['Total'])} events)")
-                actions.append(f"Investigate '{worst.index[0]}'")
+**Option 1 — Type values:** Open PSE Dashboard each week, note down the total events and
+how many were effective, and type them in below.
 
-        with st.expander("⏰ Worst shift"):
-            sc = df[df["Shift"].isin(SHIFT_ORDER)].groupby("Shift").agg(
-                Total=("Scannable ID","count"), Effective=("Is Effective","sum")
-            ).reindex(SHIFT_ORDER, fill_value=0)
-            sc["Eff %"] = (sc["Effective"]/sc["Total"]*100).round(1)
-            for s in SHIFT_ORDER:
-                m = "🔴" if sc.loc[s,"Eff %"]<60 else "🟡" if sc.loc[s,"Eff %"]<75 else "🟢"
-                st.markdown(f"  {m} **{s}**: {sc.loc[s,'Eff %']}% ({int(sc.loc[s,'Total'])} events)")
+**Option 2 — Upload CSVs:** Export a PSE Dashboard CSV each week (one file per week).
+Upload them here and the tool calculates everything automatically.
 
-        if actions:
-            st.markdown("---")
-            st.markdown("#### 📋 Actions")
-            for i, a in enumerate(actions, 1): st.markdown(f"**{i}.** {a}")
+You need **at least 2 weeks** to see a trend. 4+ weeks is ideal.
+""")
+    st.markdown("---")
 
+    tm = st.selectbox("How do you want to input your weekly data?", ["📝 I'll type the numbers", "📂 I'll upload a CSV per week"], key="tm")
+
+    if tm == "📝 I'll type the numbers":
+        st.caption("Open PSE Dashboard for each week → note Total events and Effective count → type below.")
+        nw = st.slider("How many weeks of data do you have?", 2, 12, 4, key="tw_n")
+        weeks = []
+        for i in range(nw):
+            with st.expander(f"Week {i+1}", expanded=(i<3)):
+                wl = st.text_input("Week label (e.g. W28, 4 Aug):", value=f"W{i+1}", key=f"tw_l{i}")
+                wt = st.number_input("Total PS events that week:", min_value=0, value=0, step=1, key=f"tw_t{i}")
+                we = st.number_input("How many were Effective:", min_value=0, value=0, step=1, key=f"tw_e{i}")
+                if wt > 0: weeks.append({"Week":wl,"Total":int(wt),"Effective":int(we)})
+        _render_trend(weeks)
     else:
-        st.markdown("### 📈 Week-over-Week Trend")
-        st.caption("Upload one PSE CSV per week OR type values.")
-        tm = st.selectbox("Input:", ["📝 Type values", "📂 Upload CSVs"], key="tm")
-        if tm == "📝 Type values":
-            nw = st.slider("Weeks:", 2, 12, 4, key="tw_n")
-            weeks = []
-            for i in range(nw):
-                with st.expander(f"Week {i+1}", expanded=(i<2)):
-                    wl = st.text_input("Label:", value=f"W{i+1}", key=f"tw_l{i}")
-                    wt = st.number_input("Total events:", min_value=0, value=0, step=1, key=f"tw_t{i}")
-                    we = st.number_input("Effective:", min_value=0, value=0, step=1, key=f"tw_e{i}")
-                    if wt > 0: weeks.append({"Week":wl,"Total":int(wt),"Effective":int(we)})
-            _render_trend(weeks)
-        else:
-            nf = st.slider("Weeks:", 2, 12, 4, key="tf_n")
-            weeks = []
-            for i in range(nf):
-                c1, c2 = st.columns([1,3])
-                with c1: wl = st.text_input("Label:", value=f"W{i+1}", key=f"tf_l{i}")
-                with c2: fu = st.file_uploader(f"PSE CSV:", type="csv", key=f"tf_f{i}")
-                if fu:
-                    try:
-                        wdf = pd.read_csv(fu, encoding="utf-8-sig")
-                        we = int((wdf.get("Effective (Y/N)","").astype(str).str.strip().str.upper()=="Y").sum()) if "Effective (Y/N)" in wdf.columns else 0
-                        weeks.append({"Week":wl,"Total":len(wdf),"Effective":we})
-                        st.caption(f"→ {wl}: {len(wdf)} events, {we} effective")
-                    except Exception as e: st.error(f"Error: {e}")
-            _render_trend(weeks)
+        st.caption("Export PSE Dashboard → Raw Data → CSV once per week. Upload one file per week below.")
+        nf = st.slider("How many weeks?", 2, 12, 4, key="tf_n")
+        weeks = []
+        for i in range(nf):
+            c1, c2 = st.columns([1,3])
+            with c1: wl = st.text_input("Label:", value=f"W{i+1}", key=f"tf_l{i}")
+            with c2: fu = st.file_uploader(f"Week {i+1} PSE CSV:", type="csv", key=f"tf_f{i}")
+            if fu:
+                try:
+                    wdf = pd.read_csv(fu, encoding="utf-8-sig")
+                    we = int((wdf.get("Effective (Y/N)", pd.Series(dtype=str)).astype(str).str.strip().str.upper()=="Y").sum()) if "Effective (Y/N)" in wdf.columns else 0
+                    weeks.append({"Week":wl,"Total":len(wdf),"Effective":we})
+                    st.caption(f"✓ {wl}: {len(wdf)} events, {we} effective ({fmt_pct(we,len(wdf))})")
+                except Exception as e: st.error(f"Error reading file: {e}")
+        _render_trend(weeks)
 
 def _render_trend(weeks):
     if len(weeks) >= 2:
         w = pd.DataFrame(weeks)
         w["Ineffective"] = w["Total"] - w["Effective"]
         w["Eff %"] = (w["Effective"]/w["Total"]*100).round(1)
+
         fig, ax = plt.subplots(figsize=(7,3))
         ax.plot(w["Week"], w["Total"], marker="o", color="steelblue", linewidth=2, label="Total")
         ax.plot(w["Week"], w["Ineffective"], marker="s", color="#e74c3c", linewidth=1.5, label="Ineffective")
@@ -649,7 +653,7 @@ def _render_trend(weeks):
         elif l < f-5: st.error(f"📉 Worsening: {f}% → {l}%")
         else: st.info(f"➡️ Stable: {f}% → {l}%")
         st.dataframe(w, use_container_width=True)
-    elif len(weeks)==1: st.info("Need 2+ weeks.")
+    elif len(weeks)==1: st.info("Need at least 2 weeks to show a trend.")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -671,31 +675,38 @@ def render_guide():
     st.markdown("### 📖 How to Use")
     with st.expander("🚀 Quick Start", expanded=True):
         st.markdown("""
-**Step 1:** Export PSE Dashboard → Raw Data → CSV
+**Step 1:** Go to PSE Dashboard → Raw Data → Export as CSV
 
 **Step 2:** Upload it here
 
-**Step 3:** (Optional) Go to Summary tab → copy the tracking IDs → paste into SCC → export SCC CSV → upload here too
+**Step 3:** (For location data) Go to **Summary** tab → copy tracking IDs → paste into SCC → export SCC CSV → upload here
 
-**That's it.** Use the tabs to explore:
-- **Summary** — overview of everything
-- **Locations** — where problems happen (needs SCC)
-- **Problem Solvers** — who's effective, who needs help
-- **Time & Cycles** — when problems happen
-- **Cost & DEA** — money impact
-- **Holes** — systemic issues nobody's fixing
-- **Analysis & Trend** — week-over-week tracking
+**Then explore the tabs.**
+""")
+    with st.expander("📊 What each tab shows"):
+        st.markdown("""
+| Tab | What you'll find |
+|-----|-----------------|
+| 📊 **Summary** | Overview by process, category, hour + IDs to copy for SCC |
+| 📍 **Locations** | Pick a cluster → see aisles, categories, shifts, who's solving there |
+| 👤 **Associates** | Ranked worst→best + who has 0% effectiveness + who's failing SLA |
+| 🔄 **Cycles** | Breakdown by dispatch cycle (CYCLE_1, HV_A, etc.) |
+| 💰 **Cost & DEA** | Money lost + DEA misses organised by shift |
+| 🕳️ **Holes** | Packages that needed PS twice + costly failures |
+| 📈 **Trend** | Track week-over-week (type numbers or upload CSVs) |
+| 💾 **Export** | Download the data |
 """)
     with st.expander("❓ What do the terms mean?"):
         st.markdown("""
-| Term | What it means |
-|------|--------------|
-| **Effective** | The problem solver actually fixed the issue correctly |
+| Term | Meaning |
+|------|---------|
+| **Effective** | The associate actually fixed the problem |
 | **Ineffective** | They attempted to fix it but it didn't work |
-| **SLA** | Did they fix it within the time limit? (Service Level Agreement) |
-| **DEA Miss** | A dispatch error — package wasn't dispatched when it should have been |
-| **Concession** | Money Amazon had to refund the customer because of the issue |
-| **Process** | Where in the station flow it happened: Induct → Stow → Pick → Dispatch |
+| **SLA** | Did they fix it within the allowed time window? |
+| **DEA Miss** | Package wasn't dispatched when it should have been |
+| **Concession** | Money refunded to the customer because of the issue |
+| **Process** | Where in the flow: Induct → Stow → Pick → Dispatch |
+| **Cycle** | Which dispatch wave (CYCLE_1, HV_A, ADHOC, etc.) |
 """)
 
 
@@ -711,26 +722,23 @@ if mode == "📖 Guide":
 elif mode == "Single Station":
     c_pse, c_scc = st.columns(2)
     with c_pse: pse_file = st.file_uploader("🔧 PSE Dashboard CSV", type="csv", key="pse")
-    with c_scc: scc_file = st.file_uploader("📋 SCC CSV (optional — for location drill-down)", type="csv", key="scc")
+    with c_scc: scc_file = st.file_uploader("📋 SCC CSV (optional — for location data)", type="csv", key="scc")
 
     if pse_file:
         try: pse_df = pd.read_csv(pse_file, encoding="utf-8-sig")
         except Exception as e: st.error(f"❌ {e}"); st.stop()
 
         miss = [c for c in REQUIRED_PSE_COLS if c not in pse_df.columns]
-        if miss: st.error(f"❌ Missing: {miss}"); st.stop()
+        if miss: st.error(f"❌ Missing columns: {miss}"); st.stop()
 
-        # Remove non-UK IDs
         pse_df, removed = filter_uk_ids(pse_df)
         if removed > 0: st.info(f"Removed {removed} non-UK IDs — {len(pse_df)} kept.")
 
-        # SCC
         scc_df = None
         if scc_file:
             try: scc_df = pd.read_csv(scc_file, encoding="utf-8-sig")
             except: scc_df = None
 
-        # Clean & Merge
         df = clean_pse(pse_df)
         if scc_df is not None:
             df = merge_pse_scc(df, scc_df)
@@ -741,7 +749,7 @@ elif mode == "Single Station":
                 if col not in df.columns: df[col] = None
             st.success(f"✅ **{len(df)} events** loaded")
 
-        # ─── FILTERS (simplified: Process + Category only) ───────────────────
+        # FILTERS
         st.markdown("---")
         f1, f2 = st.columns(2)
         with f1:
@@ -753,14 +761,14 @@ elif mode == "Single Station":
 
         filtered = df.copy()
         if sel_procs: filtered = filtered[filtered["Process"].isin(sel_procs)]
-        else: st.warning("Pick at least one process."); st.stop()
+        else: st.warning("Pick a process."); st.stop()
         if sel_cats: filtered = filtered[filtered["Category"].isin(sel_cats)]
-        else: st.warning("Pick at least one category."); st.stop()
+        else: st.warning("Pick a category."); st.stop()
 
         total = len(filtered)
-        if total == 0: st.warning("No events match."); st.stop()
+        if total == 0: st.warning("No events."); st.stop()
 
-        # ─── METRICS ─────────────────────────────────────────────────────────
+        # METRICS
         dr = get_date_range(filtered)
         eff = int(filtered["Is Effective"].sum())
         ineff = total - eff
@@ -778,23 +786,23 @@ elif mode == "Single Station":
         c2.metric("Effective", f"{eff} ({fmt_pct(eff,total)})")
         c3.metric("Ineffective", f"{ineff} ({fmt_pct(ineff,total)})")
         c4.metric("SLA Met", fmt_pct(sla,total))
-        c5.metric("Concession Cost", fmt_cost(cost))
+        c5.metric("Concessions", fmt_cost(cost))
 
-        # ─── TABS ────────────────────────────────────────────────────────────
+        # TABS
         st.markdown("---")
         t1, t2, t3, t4, t5, t6, t7, t8 = st.tabs([
-            "📊 Summary", "📍 Locations", "👤 Problem Solvers",
-            "⏰ Time & Cycles", "💰 Cost & DEA", "🕳️ Holes",
-            "🔬 Analysis & Trend", "💾 Export"
+            "📊 Summary", "📍 Locations", "👤 Associates",
+            "🔄 Cycles", "💰 Cost & DEA", "🕳️ Holes",
+            "📈 Trend", "💾 Export"
         ])
 
         with t1: render_summary_tab(filtered, total, dr)
         with t2: render_locations_tab(filtered, total, dr)
         with t3: render_ps_tab(filtered, total, dr)
-        with t4: render_time_tab(filtered, total, dr)
+        with t4: render_cycles_tab(filtered, total, dr)
         with t5: render_cost_tab(filtered, total, dr)
         with t6: render_holes_tab(filtered, total, dr)
-        with t7: render_analysis_tab(filtered, total, dr)
+        with t7: render_trend_tab(filtered, total, dr)
         with t8: render_export_tab(filtered, total, dr)
     else:
         st.info("👆 Upload your PSE Dashboard CSV to get started.")
