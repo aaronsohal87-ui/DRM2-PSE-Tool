@@ -526,47 +526,92 @@ that's the concession.
 def render_holes_tab(df, total, dr):
     if total == 0: st.warning("No data."); return
     st.markdown("### 🕳️ Holes in Problem Solve")
-    st.caption("Packages that slipped through the cracks — systemic issues nobody fixed properly.")
+    st.caption("Packages that needed problem-solving more than once. Organised by what happened — did it get fixed or not?")
 
-    # REPEAT PS EVENTS — show what both attempts were
-    with st.expander("🔁 Same Package, Problem-Solved More Than Once", expanded=True):
-        st.caption("If a package needed PS twice, the first attempt didn't work. This shows both attempts side by side.")
-        id_counts = df.groupby("Scannable ID").size()
-        repeats = id_counts[id_counts > 1].sort_values(ascending=False)
+    # Find repeat packages
+    id_counts = df.groupby("Scannable ID").size()
+    repeats = id_counts[id_counts > 1].sort_values(ascending=False)
 
-        if len(repeats) > 0:
-            st.error(f"🚨 **{len(repeats)} packages** needed problem-solve more than once.")
+    if len(repeats) == 0:
+        st.success("✅ No packages needed problem-solving more than once.")
+        return
 
-            repeat_ids = repeats.index.tolist()
-            rdf = df[df["Scannable ID"].isin(repeat_ids)].sort_values(["Scannable ID", "Exception Open DT"])
+    st.error(f"🚨 **{len(repeats)} packages** were problem-solved more than once.")
 
-            # Build comparison table — attempt 1 vs attempt 2
-            comparisons = []
-            for tid in repeat_ids:
-                events = rdf[rdf["Scannable ID"]==tid].reset_index(drop=True)
-                row = {"Tracking ID": tid}
-                for i, (_, ev) in enumerate(events.iterrows()):
-                    n = i + 1
-                    row[f"Attempt {n} Process"] = ev.get("Process", "")
-                    row[f"Attempt {n} Category"] = ev.get("Category", "")
-                    row[f"Attempt {n} Associate"] = ev.get("PS Display", "")
-                    row[f"Attempt {n} Effective"] = ev.get("Effective", "")
-                    row[f"Attempt {n} Shift"] = ev.get("Shift", "")
-                    if n >= 2: break  # show first 2
-                comparisons.append(row)
+    # Build comparison data with pattern classification
+    repeat_ids = repeats.index.tolist()
+    rdf = df[df["Scannable ID"].isin(repeat_ids)].sort_values(["Scannable ID", "Exception Open DT"])
 
-            comp_df = pd.DataFrame(comparisons)
-            st.dataframe(comp_df, use_container_width=True, height=min(400, 35*len(comp_df)+40))
-            st.caption(f"Total: {len(repeats)} packages with 2+ PS events")
-        else:
-            st.success("✅ No packages needed PS more than once.")
+    comparisons = []
+    for tid in repeat_ids:
+        events = rdf[rdf["Scannable ID"]==tid].reset_index(drop=True)
+        effs = events["Effective"].tolist()
+        pattern = " then ".join(["Effective" if e=="Y" else "Ineffective" for e in effs[:2]])
+        same_solver = len(set(events["PS Display"].tolist()[:2])) == 1
 
-    # INEFFECTIVE + COST
-    with st.expander("📉 Worst Outcomes — Failed PS + Customer Got Refund"):
-        st.caption("PS was ineffective AND Amazon had to refund the customer. Sorted by cost (highest first).")
+        row = {
+            "Tracking ID": tid,
+            "Pattern": pattern,
+            "Same Associate?": "Yes" if same_solver else "No",
+            "1st Process": events.iloc[0].get("Process","") if len(events)>0 else "",
+            "1st Category": events.iloc[0].get("Category","") if len(events)>0 else "",
+            "1st Associate": events.iloc[0].get("PS Display","") if len(events)>0 else "",
+            "1st Result": "Effective" if events.iloc[0].get("Effective","")=="Y" else "Ineffective",
+            "2nd Process": events.iloc[1].get("Process","") if len(events)>1 else "",
+            "2nd Category": events.iloc[1].get("Category","") if len(events)>1 else "",
+            "2nd Associate": events.iloc[1].get("PS Display","") if len(events)>1 else "",
+            "2nd Result": "Effective" if events.iloc[1].get("Effective","")=="Y" else "Ineffective" if len(events)>1 else "",
+        }
+        comparisons.append(row)
+
+    comp_df = pd.DataFrame(comparisons)
+
+    # Pattern summary
+    pattern_counts = comp_df["Pattern"].value_counts()
+    with st.expander("📊 Pattern Summary", expanded=True):
+        st.markdown("""
+| Pattern | What it means | Concern Level |
+|---------|--------------|---------------|
+| **Ineffective then Ineffective** | Failed BOTH times — nobody could fix it | 🔴 Critical |
+| **Effective then Effective** | Marked as fixed twice — why did it come back? | 🟠 Suspicious |
+| **Effective then Ineffective** | Fixed once, new problem appeared or original fix failed | 🟡 Investigate |
+| **Ineffective then Effective** | Failed first, fixed second — normal recovery | 🟢 OK |
+""")
+        for pattern, count in pattern_counts.items():
+            same_solver_n = comp_df[(comp_df["Pattern"]==pattern) & (comp_df["Same Associate?"]=="Yes")].shape[0]
+            st.markdown(f"- **{pattern}**: {count} packages ({same_solver_n} by same associate both times)")
+
+    # Show each pattern group
+    pattern_labels = {
+        "Ineffective then Ineffective": ("🔴 Never Fixed", "Failed both times. Nobody resolved this package. Needs escalation."),
+        "Effective then Effective": ("🟠 Came Back After 'Fix'", "Marked effective but the package returned. Was the first fix real?"),
+        "Effective then Ineffective": ("🟡 New Problem After Fix", "First issue fixed, but a new issue appeared (or the fix didn't hold)."),
+        "Ineffective then Effective": ("🟢 Eventually Fixed", "Failed first attempt, someone fixed it second time. Normal recovery."),
+    }
+
+    for pattern in ["Ineffective then Ineffective", "Effective then Effective", "Effective then Ineffective", "Ineffective then Effective"]:
+        subset = comp_df[comp_df["Pattern"]==pattern]
+        if len(subset) == 0: continue
+        title, desc = pattern_labels.get(pattern, (pattern, ""))
+        with st.expander(f"{title} ({len(subset)} packages)"):
+            st.caption(desc)
+            display = subset[[
+                "Tracking ID", "Same Associate?",
+                "1st Process", "1st Category", "1st Associate", "1st Result",
+                "2nd Process", "2nd Category", "2nd Associate", "2nd Result"
+            ]].reset_index(drop=True)
+            display.index = range(1, len(display)+1)
+            st.dataframe(display, use_container_width=True)
+
+    # Worst outcomes — failed PS with cost
+    with st.expander("📉 Costly Failures — Ineffective PS + Customer Refund"):
+        st.caption("""
+Events where PS was marked Ineffective AND the customer received a refund (concession).
+Data source: `Effective (Y/N) = N` AND `gross_concession > 0` in PSE export.
+""")
         bad = df[(~df["Is Effective"]) & (df["Cost (£)"]>0)].sort_values("Cost (£)", ascending=False)
         if len(bad) > 0:
-            st.error(f"🚨 {len(bad)} events — total cost: {fmt_cost(bad['Cost (£)'].sum())}")
+            st.error(f"{len(bad)} events — {fmt_cost(bad['Cost (£)'].sum())} total concessions")
             cols = [c for c in ["Scannable ID","Process","Category","PS Display","Shift","Cost (£)"] if c in bad.columns]
             st.dataframe(bad[cols].head(20).reset_index(drop=True), use_container_width=True)
         else:
