@@ -447,35 +447,126 @@ def render_holes(df, total, dr, kp=""):
 
         # ─── PER ASSOCIATE: Why their packages came back ─────────────────────
         st.markdown("#### 👤 Per Associate — Why Their Packages Came Back")
-        st.caption("Shows each associate whose first resolution didn't hold, and the reason the package was re-inducted. Source: 1st PS event per tracking ID + 2nd event category.")
+        st.caption("Each associate whose first resolution didn't hold. Shows total packages that came back + reasons. Source: 1st PS event per tracking ID + 2nd event category.")
 
-        # Build per-associate reasons table
-        ps_reasons = []
+        # Build compact per-associate table (one row per person, reasons summarised)
+        ps_summary = []
         for ps_name in comp_df["1st Associate"].value_counts().index:
             theirs = comp_df[comp_df["1st Associate"]==ps_name]
+            total_back = len(theirs)
             reasons = theirs["2nd Category"].value_counts()
-            for reason, count in reasons.items():
-                ps_reasons.append({"Associate": ps_name, "Packages Came Back": count, "Came Back For": reason})
+            reason_str = ", ".join([f"{cat} ({n})" for cat, n in reasons.items()])
+            ps_summary.append({
+                "Associate": ps_name,
+                "Packages Came Back": total_back,
+                "Reasons": reason_str
+            })
 
-        if ps_reasons:
-            ps_reasons_df = pd.DataFrame(ps_reasons).sort_values("Packages Came Back", ascending=False)
-            ps_reasons_df.index = range(1, len(ps_reasons_df)+1)
-            st.dataframe(ps_reasons_df, use_container_width=True)
+        if ps_summary:
+            ps_sum_df = pd.DataFrame(ps_summary).sort_values("Packages Came Back", ascending=False)
+            ps_sum_df.index = range(1, len(ps_sum_df)+1)
+            st.dataframe(ps_sum_df, use_container_width=True)
         else:
             st.info("No repeat data to analyse.")
 
     st.markdown("---")
 
-    # ─── INEFFECTIVE + CUSTOMER REFUND ───────────────────────────────────────
-    st.markdown("#### 📉 Ineffective PS with Customer Refund")
-    st.caption("Events where PS was ineffective AND a customer refund was issued. Source: `Effective (Y/N) = N` AND `gross_concession > 0`.")
+    # ─── CUSTOMER CONCESSIONS ON INEFFECTIVE PS ─────────────────────────────
+    st.markdown("#### 📉 Customer Concessions (where PS was Ineffective)")
+    st.caption("""
+These are events where PS was marked Ineffective AND the customer received a refund.
+**This is NOT just lost parcels** — concessions include: Damaged, Late Delivery, Missing Item, Delivered Not Received.
+Source: `Effective (Y/N) = N` AND `gross_concession > 0` in PSE export.
+""")
     bad = df[(~df["Is Effective"]) & (df["Cost (£)"]>0)].sort_values("Cost (£)", ascending=False)
     if len(bad)>0:
-        st.error(f"{len(bad)} events — {fmt_cost(bad['Cost (£)'].sum())} total refunds on failed PS")
+        st.error(f"{len(bad)} events — {fmt_cost(bad['Cost (£)'].sum())} total concessions where PS failed")
+        # Show breakdown by concession type
+        if "concession_bucket_l1" in bad.columns:
+            cb = bad["concession_bucket_l1"].dropna().value_counts()
+            if len(cb)>0:
+                st.markdown("**What customers were refunded for:**")
+                tbl = cb.reset_index(); tbl.columns=["Concession Type","Count"]; tbl.index=range(1,len(tbl)+1)
+                st.dataframe(tbl, use_container_width=True)
         cols = [c for c in ["Scannable ID","Process","Category","PS Display","Shift","Cost (£)"] if c in bad.columns]
         st.dataframe(bad[cols].head(20).reset_index(drop=True), use_container_width=True)
     else:
-        st.success("✅ No ineffective events with customer refunds.")
+        st.success("✅ No concessions on ineffective PS events.")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAB: BRIDGE (shift handover summary)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def render_bridge(df, total, dr, kp=""):
+    if total==0: st.warning("No data."); return
+    st.markdown("### 📋 Bridge / Shift Handover")
+    st.caption("Copy-paste ready text for your bridge, comms, or shift notes. Select All → Copy from any box below.")
+
+    eff = int(df["Is Effective"].sum()); ie = total-eff
+    sla = int(df["SLA Met"].sum()); cost = df["Cost (£)"].sum()
+    dea = int(df["DEA Miss"].sum())
+
+    # HEADLINE
+    headline = f"PSE SUMMARY — {dr}\n{'='*40}\n{total} events | {fmt_pct(eff,total)} effective | {fmt_pct(sla,total)} SLA | {fmt_cost(cost)} concessions | {dea} DEA misses"
+    st.markdown("**Headline:**")
+    st.code(headline, language=None)
+
+    # BY PROCESS
+    proc_lines = ["BY PROCESS:"]
+    proc_data = df.groupby("Process").agg(Total=("Scannable ID","count"),Effective=("Is Effective","sum")).reindex(PROCESS_ORDER, fill_value=0)
+    proc_data["Eff%"] = (proc_data["Effective"]/proc_data["Total"]*100).round(1)
+    worst_proc = proc_data["Eff%"].idxmin() if proc_data["Total"].sum()>0 else ""
+    for p in PROCESS_ORDER:
+        if proc_data.loc[p,"Total"]>0:
+            flag = " ← WORST" if p==worst_proc else ""
+            proc_lines.append(f"• {p}: {int(proc_data.loc[p,'Total'])} events, {proc_data.loc[p,'Eff%']}% effective{flag}")
+    st.markdown("**By Process:**")
+    st.code("\n".join(proc_lines), language=None)
+
+    # WORST CATEGORIES
+    cat_data = df.groupby("Category").agg(Total=("Scannable ID","count"),Effective=("Is Effective","sum")).sort_values("Total",ascending=False)
+    cat_data["Eff%"] = (cat_data["Effective"]/cat_data["Total"]*100).round(1)
+    worst_cats = cat_data[cat_data["Total"]>=5].sort_values("Eff%").head(5)
+    cat_lines = ["WORST CATEGORIES (5+ events, lowest Eff%):"]
+    for name, row in worst_cats.iterrows():
+        cat_lines.append(f"• {name}: {row['Eff%']}% effective ({int(row['Total'])} events, {int(row['Total']-row['Effective'])} ineffective)")
+    st.markdown("**Worst Categories:**")
+    st.code("\n".join(cat_lines), language=None)
+
+    # REPEAT PACKAGES
+    id_counts = df.groupby("Scannable ID").size()
+    repeats = id_counts[id_counts>1]
+    rdf = df[df["Scannable ID"].isin(repeats.index)].sort_values(["Scannable ID","Exception Open DT"]) if len(repeats)>0 else pd.DataFrame()
+    repeat_lines = [f"REPEAT PACKAGES: {len(repeats)} packages PS'd more than once"]
+    if len(repeats)>0 and len(rdf)>0:
+        # Top offenders
+        firsts = []
+        for tid in repeats.index:
+            evs = rdf[rdf["Scannable ID"]==tid].reset_index(drop=True)
+            if len(evs)>=1: firsts.append(evs.iloc[0]["PS Display"])
+        if firsts:
+            first_counts = pd.Series(firsts).value_counts().head(3)
+            for name, cnt in first_counts.items():
+                repeat_lines.append(f"• {name}: {cnt} packages came back")
+    st.markdown("**Repeat Packages:**")
+    st.code("\n".join(repeat_lines), language=None)
+
+    # DEA
+    dea_lines = [f"DEA MISSES: {dea} events"]
+    if dea > 0:
+        dea_ev = df[df["DEA Miss"]>0]
+        dea_shift = dea_ev[dea_ev["Shift"].isin(SHIFT_ORDER)].groupby("Shift").size().reindex(SHIFT_ORDER,fill_value=0)
+        for s in SHIFT_ORDER:
+            if dea_shift[s]>0: dea_lines.append(f"• {s} shift: {int(dea_shift[s])} miss(es)")
+    st.markdown("**DEA Misses:**")
+    st.code("\n".join(dea_lines), language=None)
+
+    # FULL BRIDGE (everything together)
+    full = "\n\n".join([headline, "\n".join(proc_lines), "\n".join(cat_lines), "\n".join(repeat_lines), "\n".join(dea_lines)])
+    st.markdown("---")
+    st.markdown("**Full bridge (all in one):**")
+    st.code(full, language=None)
 
 
 def render_trend(df, total, dr, kp=""):
@@ -584,15 +675,16 @@ def render_guide():
 # ═══════════════════════════════════════════════════════════════════════════════
 def run_station(df, total, dr, kp=""):
     """Run all tabs for a given dataset."""
-    t1,t2,t3,t4,t5,t6,t7,t8 = st.tabs(["📊 Summary","📍 Locations","👤 Associates","🔄 Cycles","💰 Cost & DEA","🕳️ Holes","📈 Trend","💾 Export"])
+    t1,t2,t3,t4,t5,t6,t7,t8,t9 = st.tabs(["📊 Summary","📍 Locations","👤 Associates","🔄 Cycles","💰 Cost & DEA","🕳️ Holes","📋 Bridge","📈 Trend","💾 Export"])
     with t1: render_summary(df, total, dr, kp)
     with t2: render_locations(df, total, dr, kp)
     with t3: render_associates(df, total, dr, kp)
     with t4: render_cycles(df, total, dr, kp)
     with t5: render_cost(df, total, dr, kp)
     with t6: render_holes(df, total, dr, kp)
-    with t7: render_trend(df, total, dr, kp)
-    with t8: render_export(df, total, dr, kp)
+    with t7: render_bridge(df, total, dr, kp)
+    with t8: render_trend(df, total, dr, kp)
+    with t9: render_export(df, total, dr, kp)
 
 def load_dataset(pse_file, scc_file=None, label=""):
     """Load, clean, validate a PSE+SCC pair. Returns (df, error_msg)."""
