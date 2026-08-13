@@ -514,71 +514,90 @@ Source: `Effective (Y/N) = N` AND `gross_concession > 0` in PSE export.
 # NAVIGATION SEARCH
 # ═══════════════════════════════════════════════════════════════════════════════
 
-NAV_MAP = {
-    "cost": ("💰 Cost & DEA", "Customer refunds by category, by process, DEA misses by shift"),
-    "concession": ("💰 Cost & DEA", "Customer refund amounts by category"),
-    "refund": ("💰 Cost & DEA", "Customer refund breakdown"),
-    "dea": ("💰 Cost & DEA", "DEA misses organised by shift with drill-down"),
-    "money": ("💰 Cost & DEA", "Financial impact of PS events"),
-    "cluster": ("📍 Locations", "Cluster deep dive — aisles, categories, shifts per cluster"),
-    "aisle": ("📍 Locations", "Aisle breakdown inside each cluster"),
-    "location": ("📍 Locations", "Where problems are happening (needs SCC data)"),
-    "sort zone": ("📍 Locations", "Worst sort zones with main issue type"),
-    "where": ("📍 Locations", "Physical location of problems"),
-    "associate": ("👤 Associates", "Ranked worst → best, flagged underperformers"),
-    "ineffective": ("👤 Associates", "Associates ranked by effectiveness — worst at top"),
-    "worst": ("👤 Associates", "Worst performing associates + who needs coaching"),
-    "coaching": ("👤 Associates", "Flagged associates below average + category failures"),
-    "sla": ("👤 Associates", "SLA compliance per associate"),
-    "who": ("👤 Associates", "Which associates are handling events"),
-    "repeat": ("🕳️ Holes", "Packages problem-solved more than once + who is responsible"),
-    "came back": ("🕳️ Holes", "Why packages came back + per-associate reasons"),
-    "holes": ("🕳️ Holes", "Biggest gaps + repeat packages + costly failures"),
-    "gap": ("🕳️ Holes", "Categories with worst effectiveness rates"),
-    "multiple": ("🕳️ Holes", "Packages that needed PS more than once"),
-    "cycle": ("🔄 Cycles", "Breakdown by dispatch cycle (CYCLE_1, HV_A, etc.)"),
-    "dispatch": ("🔄 Cycles", "Cycle data"),
-    "trend": ("📈 Trend", "Week-over-week tracking"),
-    "week": ("📈 Trend", "Weekly comparison over time"),
-    "improving": ("📈 Trend", "Is effectiveness getting better or worse?"),
-    "process": ("📊 Summary", "By process breakdown (Induct, Stow, Pick, Dispatch)"),
-    "category": ("📊 Summary", "By category with effectiveness rates"),
-    "hour": ("📊 Summary", "Hour of day chart — when problems happen"),
-    "when": ("📊 Summary", "Time-based breakdown of events"),
-    "tracking": ("📊 Summary", "Copy tracking IDs for SCC upload"),
-    "scc": ("📊 Summary", "Tracking IDs to paste into SCC"),
-    "id": ("📊 Summary", "Tracking ID list for SCC"),
-    "export": ("💾 Export", "Download filtered data as CSV"),
-    "download": ("💾 Export", "Download your data"),
-}
+NAV_MAP = [
+    # (keywords list, tab, description, action hint)
+    (["cost","money","refund","concession","expensive","£","pound"],
+     "💰 Cost & DEA", "Customer refunds by category/process, DEA misses by shift",
+     "Open the **💰 Cost & DEA** tab"),
+    (["dea","miss","dispatch error","not dispatched"],
+     "💰 Cost & DEA", "DEA misses organised by shift — drill into each shift",
+     "Open **💰 Cost & DEA** tab → scroll to DEA Misses section"),
+    (["cluster","aisle","location","where","sort zone","physical","walk","area"],
+     "📍 Locations", "Cluster deep dive — pick a cluster to see aisles, categories, shifts inside it",
+     "Open **📍 Locations** tab → select a cluster from the dropdown"),
+    (["associate","ineffective","worst","who","coaching","failing","0%","zero","performer","staff","person"],
+     "👤 Associates", "Ranked worst → best with shift, SLA, and category breakdown",
+     "Open **👤 Associates** tab — worst performers are at the top"),
+    (["sla","slow","time","late","within time"],
+     "👤 Associates", "SLA compliance per associate — who is slowest",
+     "Open **👤 Associates** tab → look at SLA % column or Flagged section"),
+    (["repeat","came back","come back","multiple","again","twice","same package","hole","gap","package"],
+     "🕳️ Holes", "Packages PS'd more than once + why they came back + per-associate reasons",
+     "Open **🕳️ Holes** tab"),
+    (["biggest","problem","problems","deep dive","deep","main issue","worst","overview","what's wrong","summary","headline","station"],
+     "📊 Summary + 🕳️ Holes", "Start with Summary for the overview, then Holes for systemic issues",
+     "Open **📊 Summary** tab for the big picture, then **🕳️ Holes** tab for the biggest gaps ranked by effectiveness"),
+    (["cycle","cycle 1","hv","adhoc","rts","wave"],
+     "🔄 Cycles", "Breakdown by dispatch cycle",
+     "Open **🔄 Cycles** tab"),
+    (["trend","week","improving","getting better","getting worse","over time","progress"],
+     "📈 Trend", "Week-over-week tracking — type numbers or upload a CSV per week",
+     "Open **📈 Trend** tab — you need 2+ weeks of data"),
+    (["process","induct","stow","pick","category","breakdown"],
+     "📊 Summary", "By process and category breakdown with effectiveness rates",
+     "Open **📊 Summary** tab → By Process / By Category sections"),
+    (["hour","time of day","when","night","morning","afternoon"],
+     "📊 Summary", "Hour of day chart — when problems happen",
+     "Open **📊 Summary** tab → Hour of Day section"),
+    (["tracking","scc","id","copy","paste","upload"],
+     "📊 Summary", "Tracking IDs to copy into SCC for location data",
+     "Open **📊 Summary** tab → expand 'Tracking IDs — Copy into SCC'"),
+    (["export","download","csv","save"],
+     "💾 Export", "Download your filtered data as CSV",
+     "Open **💾 Export** tab"),
+]
 
-def render_search(df, kp=""):
-    """Navigation helper — tells you which tab has what you need."""
-    query = st.text_input("🔍 What are you looking for?", key=f"{kp}search", placeholder="e.g. cost, cluster, ineffective associates, repeat packages, trend...")
+def render_search(kp=""):
+    """Navigation helper — tells you which tab to use and what to do."""
+    query = st.text_input("🔍 What do you want to find out?", key=f"{kp}search",
+                          placeholder="e.g. biggest problems, who is ineffective, why packages came back, cost breakdown...")
     if not query or not query.strip():
         return
     q = query.strip().lower()
 
-    # Find matching navigation entries
-    matches = []
-    for keyword, (tab, desc) in NAV_MAP.items():
-        if keyword in q or q in keyword:
-            matches.append((tab, desc, keyword))
+    # Score each nav entry by keyword matches
+    scored = []
+    query_words = [w for w in q.split() if len(w) >= 3]
+    for keywords, tab, desc, action in NAV_MAP:
+        score = 0
+        # Multi-word keyword match (e.g. "deep dive" in query)
+        for kw in keywords:
+            if kw in q:
+                score += 2
+        # Single word match (handles "problems" matching "problem" etc.)
+        for word in query_words:
+            for kw in keywords:
+                if word in kw or kw in word:
+                    score += 0.5
+                    break
+        if score > 0:
+            scored.append((score, tab, desc, action))
 
-    # Deduplicate by tab
-    seen_tabs = set()
-    unique_matches = []
-    for tab, desc, kw in matches:
-        if tab not in seen_tabs:
-            seen_tabs.add(tab)
-            unique_matches.append((tab, desc))
+    # Deduplicate by tab, keep highest score
+    scored.sort(key=lambda x: -x[0])
+    seen = set()
+    results = []
+    for score, tab, desc, action in scored:
+        if tab not in seen:
+            seen.add(tab)
+            results.append((tab, desc, action))
 
-    if unique_matches:
-        st.markdown(f"**Go to:**")
-        for tab, desc in unique_matches[:3]:
-            st.markdown(f"➡️ **{tab}** — {desc}")
+    if results:
+        for tab, desc, action in results[:3]:
+            st.success(f"**{action}**")
+            st.caption(f"{tab} — {desc}")
     else:
-        st.info(f"No match for \'{query}\'. Try: cost, cluster, associate, repeat, trend, cycle, hour, sla, dea, export")
+        st.info("💡 Try searching for: **biggest problems** · **ineffective associates** · **cost** · **cluster** · **repeat packages** · **trend** · **DEA** · **cycle** · **SCC**")
     st.markdown("---")
 
 
@@ -755,7 +774,7 @@ elif mode == "Single Station":
         m1.metric("Events",total); m2.metric("Effective",f"{e} ({fmt_pct(e,total)})"); m3.metric("Ineffective",f"{ie} ({fmt_pct(ie,total)})")
         m4.metric("SLA Met",fmt_pct(sla,total)); m5.metric("Refunds",fmt_cost(cost))
         st.markdown("---")
-        render_search(filtered)
+        render_search()
         run_station(filtered, total, dr)
     else:
         st.info("👆 Upload PSE Dashboard CSV.")
@@ -852,7 +871,7 @@ elif mode == "Multi-Station Compare":
             m1,m2,m3,m4 = st.columns(4)
             m1.metric("Events",total); m2.metric("Effective",f"{e} ({fmt_pct(e,total)})"); m3.metric("Ineffective",ie); m4.metric("SLA",fmt_pct(sla,total))
             st.markdown("---")
-            render_search(sdf, kp=f"ms_{sel}_")
+            render_search(kp=f"ms_{sel}_")
             run_station(sdf, total, dr, kp=f"ms_{sel}_")
 
     elif len(datasets)==1:
