@@ -8,6 +8,17 @@ st.set_page_config(page_title="DRM2 PSE Heatmap", page_icon="🔧", layout="wide
 st.title("🔧 DRM2 PSE Heatmap")
 st.markdown("---")
 
+# Data source links
+with st.expander("🔗 Data Sources — Where to get your files", expanded=False):
+    st.markdown("""
+| What you need | Where to get it | Link |
+|---------------|----------------|------|
+| **PSE Dashboard CSV** | QuickSight → PSE Dashboard → Raw Data → Export | [Open PSE Dashboard](https://us-east-1.quicksight.aws.amazon.com/sn/account/amzlbiaquicksight/dashboards/7ac4cba0-2fe7-4e9b-a516-bf54cbc7c630/sheets/7ac4cba0-2fe7-4e9b-a516-bf54cbc7c630_8bee575d-659e-4d80-bb1f-7a4048083a85#) |
+| **SCC CSV** (optional) | SCC → Stage → Upload IDs → Export | [Open SCC Dashboard](https://logistics.amazon.co.uk/station/dashboard/stage) |
+
+**Steps:** Export PSE CSV → upload here → copy IDs from Summary tab → paste into SCC with all options selected → export SCC CSV → upload here
+""")
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # CONSTANTS
 # ═══════════════════════════════════════════════════════════════════════════════
