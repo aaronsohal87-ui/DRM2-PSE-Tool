@@ -498,76 +498,69 @@ Source: `Effective (Y/N) = N` AND `gross_concession > 0` in PSE export.
 # TAB: BRIDGE (shift handover summary)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def render_bridge(df, total, dr, kp=""):
-    if total==0: st.warning("No data."); return
-    st.markdown("### 📋 Bridge / Shift Handover")
-    st.caption("Copy-paste ready text for your bridge, comms, or shift notes. Select All → Copy from any box below.")
 
-    eff = int(df["Is Effective"].sum()); ie = total-eff
-    sla = int(df["SLA Met"].sum()); cost = df["Cost (£)"].sum()
-    dea = int(df["DEA Miss"].sum())
+# ═══════════════════════════════════════════════════════════════════════════════
+# SEARCH BAR
+# ═══════════════════════════════════════════════════════════════════════════════
 
-    # HEADLINE
-    headline = f"PSE SUMMARY — {dr}\n{'='*40}\n{total} events | {fmt_pct(eff,total)} effective | {fmt_pct(sla,total)} SLA | {fmt_cost(cost)} concessions | {dea} DEA misses"
-    st.markdown("**Headline:**")
-    st.code(headline, language=None)
+def render_search(df, kp=""):
+    """Quick search — find any tracking ID, associate, category, or keyword."""
+    query = st.text_input("🔍 Search (tracking ID, associate, category, or keyword):", key=f"{kp}search", placeholder="e.g. UK4653014790, ashfpous, DAMAGED_PACKAGE")
+    if not query or not query.strip():
+        return
+    q = query.strip()
+    results_found = False
 
-    # BY PROCESS
-    proc_lines = ["BY PROCESS:"]
-    proc_data = df.groupby("Process").agg(Total=("Scannable ID","count"),Effective=("Is Effective","sum")).reindex(PROCESS_ORDER, fill_value=0)
-    proc_data["Eff%"] = (proc_data["Effective"]/proc_data["Total"]*100).round(1)
-    worst_proc = proc_data["Eff%"].idxmin() if proc_data["Total"].sum()>0 else ""
-    for p in PROCESS_ORDER:
-        if proc_data.loc[p,"Total"]>0:
-            flag = " ← WORST" if p==worst_proc else ""
-            proc_lines.append(f"• {p}: {int(proc_data.loc[p,'Total'])} events, {proc_data.loc[p,'Eff%']}% effective{flag}")
-    st.markdown("**By Process:**")
-    st.code("\n".join(proc_lines), language=None)
+    # Search tracking IDs
+    id_match = df[df["Scannable ID"].astype(str).str.contains(q, case=False, na=False)]
+    if len(id_match) > 0:
+        results_found = True
+        st.markdown(f"**📦 {len(id_match)} event(s) for tracking ID matching '{q}':**")
+        cols = [c for c in ["Scannable ID","Process","Category","Effective","PS Display","Shift","SLA Met","Cost (£)"] if c in id_match.columns]
+        st.dataframe(id_match[cols].reset_index(drop=True), use_container_width=True)
 
-    # WORST CATEGORIES
-    cat_data = df.groupby("Category").agg(Total=("Scannable ID","count"),Effective=("Is Effective","sum")).sort_values("Total",ascending=False)
-    cat_data["Eff%"] = (cat_data["Effective"]/cat_data["Total"]*100).round(1)
-    worst_cats = cat_data[cat_data["Total"]>=5].sort_values("Eff%").head(5)
-    cat_lines = ["WORST CATEGORIES (5+ events, lowest Eff%):"]
-    for name, row in worst_cats.iterrows():
-        cat_lines.append(f"• {name}: {row['Eff%']}% effective ({int(row['Total'])} events, {int(row['Total']-row['Effective'])} ineffective)")
-    st.markdown("**Worst Categories:**")
-    st.code("\n".join(cat_lines), language=None)
+    # Search associates
+    ps_match = df[df["PS Display"].astype(str).str.contains(q, case=False, na=False)]
+    if len(ps_match) > 0 and len(id_match) == 0:
+        results_found = True
+        # Show that associate's stats
+        associates = ps_match["PS Display"].unique()
+        for assoc in associates[:3]:  # max 3 associates shown
+            adf = df[df["PS Display"]==assoc]
+            eff = int(adf["Is Effective"].sum())
+            sla = int(adf["SLA Met"].sum())
+            st.markdown(f"**👤 {assoc}** — {len(adf)} events | Eff: {eff}/{len(adf)} ({fmt_pct(eff,len(adf))}) | SLA: {fmt_pct(sla,len(adf))}")
+            cat_breakdown = adf.groupby("Category").agg(Events=("Scannable ID","count"),Effective=("Is Effective","sum"))
+            cat_breakdown["Eff %"] = (cat_breakdown["Effective"]/cat_breakdown["Events"]*100).round(1)
+            st.dataframe(cat_breakdown[["Events","Effective","Eff %"]].sort_values("Events",ascending=False), use_container_width=True)
 
-    # REPEAT PACKAGES
-    id_counts = df.groupby("Scannable ID").size()
-    repeats = id_counts[id_counts>1]
-    rdf = df[df["Scannable ID"].isin(repeats.index)].sort_values(["Scannable ID","Exception Open DT"]) if len(repeats)>0 else pd.DataFrame()
-    repeat_lines = [f"REPEAT PACKAGES: {len(repeats)} packages PS'd more than once"]
-    if len(repeats)>0 and len(rdf)>0:
-        # Top offenders
-        firsts = []
-        for tid in repeats.index:
-            evs = rdf[rdf["Scannable ID"]==tid].reset_index(drop=True)
-            if len(evs)>=1: firsts.append(evs.iloc[0]["PS Display"])
-        if firsts:
-            first_counts = pd.Series(firsts).value_counts().head(3)
-            for name, cnt in first_counts.items():
-                repeat_lines.append(f"• {name}: {cnt} packages came back")
-    st.markdown("**Repeat Packages:**")
-    st.code("\n".join(repeat_lines), language=None)
+    # Search categories
+    cat_match = df[df["Category"].astype(str).str.contains(q, case=False, na=False)]
+    if len(cat_match) > 0 and len(id_match) == 0 and len(ps_match) == 0:
+        results_found = True
+        categories = cat_match["Category"].unique()
+        for cat in categories[:3]:
+            cdf = df[df["Category"]==cat]
+            eff = int(cdf["Is Effective"].sum())
+            st.markdown(f"**🏷️ {cat}** — {len(cdf)} events | Eff: {fmt_pct(eff,len(cdf))}")
+            # Show top associates for this category
+            ps_in_cat = cdf.groupby("PS Display").agg(Events=("Scannable ID","count"),Effective=("Is Effective","sum")).sort_values("Events",ascending=False).head(5)
+            ps_in_cat["Eff %"] = (ps_in_cat["Effective"]/ps_in_cat["Events"]*100).round(1)
+            st.dataframe(ps_in_cat[["Events","Effective","Eff %"]], use_container_width=True)
 
-    # DEA
-    dea_lines = [f"DEA MISSES: {dea} events"]
-    if dea > 0:
-        dea_ev = df[df["DEA Miss"]>0]
-        dea_shift = dea_ev[dea_ev["Shift"].isin(SHIFT_ORDER)].groupby("Shift").size().reindex(SHIFT_ORDER,fill_value=0)
-        for s in SHIFT_ORDER:
-            if dea_shift[s]>0: dea_lines.append(f"• {s} shift: {int(dea_shift[s])} miss(es)")
-    st.markdown("**DEA Misses:**")
-    st.code("\n".join(dea_lines), language=None)
+    # Search processes
+    if not results_found:
+        proc_match = df[df["Process"].astype(str).str.contains(q, case=False, na=False)]
+        if len(proc_match) > 0:
+            results_found = True
+            st.markdown(f"**📦 {len(proc_match)} events** matching process '{q}'")
+            p_data = proc_match.groupby("Category").agg(Events=("Scannable ID","count"),Effective=("Is Effective","sum")).sort_values("Events",ascending=False)
+            p_data["Eff %"] = (p_data["Effective"]/p_data["Events"]*100).round(1)
+            st.dataframe(p_data[["Events","Effective","Eff %"]], use_container_width=True)
 
-    # FULL BRIDGE (everything together)
-    full = "\n\n".join([headline, "\n".join(proc_lines), "\n".join(cat_lines), "\n".join(repeat_lines), "\n".join(dea_lines)])
+    if not results_found:
+        st.info(f"No results for '{q}'. Try a tracking ID, associate login, category name, or process type.")
     st.markdown("---")
-    st.markdown("**Full bridge (all in one):**")
-    st.code(full, language=None)
-
 
 def render_trend(df, total, dr, kp=""):
     if total==0: st.warning("No data."); return
@@ -675,16 +668,15 @@ def render_guide():
 # ═══════════════════════════════════════════════════════════════════════════════
 def run_station(df, total, dr, kp=""):
     """Run all tabs for a given dataset."""
-    t1,t2,t3,t4,t5,t6,t7,t8,t9 = st.tabs(["📊 Summary","📍 Locations","👤 Associates","🔄 Cycles","💰 Cost & DEA","🕳️ Holes","📋 Bridge","📈 Trend","💾 Export"])
+    t1,t2,t3,t4,t5,t6,t7,t8 = st.tabs(["📊 Summary","📍 Locations","👤 Associates","🔄 Cycles","💰 Cost & DEA","🕳️ Holes","📈 Trend","💾 Export"])
     with t1: render_summary(df, total, dr, kp)
     with t2: render_locations(df, total, dr, kp)
     with t3: render_associates(df, total, dr, kp)
     with t4: render_cycles(df, total, dr, kp)
     with t5: render_cost(df, total, dr, kp)
     with t6: render_holes(df, total, dr, kp)
-    with t7: render_bridge(df, total, dr, kp)
-    with t8: render_trend(df, total, dr, kp)
-    with t9: render_export(df, total, dr, kp)
+    with t7: render_trend(df, total, dr, kp)
+    with t8: render_export(df, total, dr, kp)
 
 def load_dataset(pse_file, scc_file=None, label=""):
     """Load, clean, validate a PSE+SCC pair. Returns (df, error_msg)."""
@@ -743,6 +735,7 @@ elif mode == "Single Station":
         m1.metric("Events",total); m2.metric("Effective",f"{e} ({fmt_pct(e,total)})"); m3.metric("Ineffective",f"{ie} ({fmt_pct(ie,total)})")
         m4.metric("SLA Met",fmt_pct(sla,total)); m5.metric("Refunds",fmt_cost(cost))
         st.markdown("---")
+        render_search(filtered)
         run_station(filtered, total, dr)
     else:
         st.info("👆 Upload PSE Dashboard CSV.")
@@ -839,6 +832,7 @@ elif mode == "Multi-Station Compare":
             m1,m2,m3,m4 = st.columns(4)
             m1.metric("Events",total); m2.metric("Effective",f"{e} ({fmt_pct(e,total)})"); m3.metric("Ineffective",ie); m4.metric("SLA",fmt_pct(sla,total))
             st.markdown("---")
+            render_search(sdf, kp=f"ms_{sel}_")
             run_station(sdf, total, dr, kp=f"ms_{sel}_")
 
     elif len(datasets)==1:
