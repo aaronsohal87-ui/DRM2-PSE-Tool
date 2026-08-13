@@ -511,67 +511,76 @@ Source: `Effective (Y/N) = N` AND `gross_concession > 0` in PSE export.
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# SEARCH BAR
+# NAVIGATION SEARCH
 # ═══════════════════════════════════════════════════════════════════════════════
 
+NAV_MAP = {
+    "cost": ("💰 Cost & DEA", "Customer refunds by category, by process, DEA misses by shift"),
+    "concession": ("💰 Cost & DEA", "Customer refund amounts by category"),
+    "refund": ("💰 Cost & DEA", "Customer refund breakdown"),
+    "dea": ("💰 Cost & DEA", "DEA misses organised by shift with drill-down"),
+    "money": ("💰 Cost & DEA", "Financial impact of PS events"),
+    "cluster": ("📍 Locations", "Cluster deep dive — aisles, categories, shifts per cluster"),
+    "aisle": ("📍 Locations", "Aisle breakdown inside each cluster"),
+    "location": ("📍 Locations", "Where problems are happening (needs SCC data)"),
+    "sort zone": ("📍 Locations", "Worst sort zones with main issue type"),
+    "where": ("📍 Locations", "Physical location of problems"),
+    "associate": ("👤 Associates", "Ranked worst → best, flagged underperformers"),
+    "ineffective": ("👤 Associates", "Associates ranked by effectiveness — worst at top"),
+    "worst": ("👤 Associates", "Worst performing associates + who needs coaching"),
+    "coaching": ("👤 Associates", "Flagged associates below average + category failures"),
+    "sla": ("👤 Associates", "SLA compliance per associate"),
+    "who": ("👤 Associates", "Which associates are handling events"),
+    "repeat": ("🕳️ Holes", "Packages problem-solved more than once + who is responsible"),
+    "came back": ("🕳️ Holes", "Why packages came back + per-associate reasons"),
+    "holes": ("🕳️ Holes", "Biggest gaps + repeat packages + costly failures"),
+    "gap": ("🕳️ Holes", "Categories with worst effectiveness rates"),
+    "multiple": ("🕳️ Holes", "Packages that needed PS more than once"),
+    "cycle": ("🔄 Cycles", "Breakdown by dispatch cycle (CYCLE_1, HV_A, etc.)"),
+    "dispatch": ("🔄 Cycles", "Cycle data"),
+    "trend": ("📈 Trend", "Week-over-week tracking"),
+    "week": ("📈 Trend", "Weekly comparison over time"),
+    "improving": ("📈 Trend", "Is effectiveness getting better or worse?"),
+    "process": ("📊 Summary", "By process breakdown (Induct, Stow, Pick, Dispatch)"),
+    "category": ("📊 Summary", "By category with effectiveness rates"),
+    "hour": ("📊 Summary", "Hour of day chart — when problems happen"),
+    "when": ("📊 Summary", "Time-based breakdown of events"),
+    "tracking": ("📊 Summary", "Copy tracking IDs for SCC upload"),
+    "scc": ("📊 Summary", "Tracking IDs to paste into SCC"),
+    "id": ("📊 Summary", "Tracking ID list for SCC"),
+    "export": ("💾 Export", "Download filtered data as CSV"),
+    "download": ("💾 Export", "Download your data"),
+}
+
 def render_search(df, kp=""):
-    """Quick search — find any tracking ID, associate, category, or keyword."""
-    query = st.text_input("🔍 Search (tracking ID, associate, category, or keyword):", key=f"{kp}search", placeholder="e.g. UK4653014790, ashfpous, DAMAGED_PACKAGE")
+    """Navigation helper — tells you which tab has what you need."""
+    query = st.text_input("🔍 What are you looking for?", key=f"{kp}search", placeholder="e.g. cost, cluster, ineffective associates, repeat packages, trend...")
     if not query or not query.strip():
         return
-    q = query.strip()
-    results_found = False
+    q = query.strip().lower()
 
-    # Search tracking IDs
-    id_match = df[df["Scannable ID"].astype(str).str.contains(q, case=False, na=False)]
-    if len(id_match) > 0:
-        results_found = True
-        st.markdown(f"**📦 {len(id_match)} event(s) for tracking ID matching '{q}':**")
-        cols = [c for c in ["Scannable ID","Process","Category","Effective","PS Display","Shift","SLA Met","Cost (£)"] if c in id_match.columns]
-        st.dataframe(id_match[cols].reset_index(drop=True), use_container_width=True)
+    # Find matching navigation entries
+    matches = []
+    for keyword, (tab, desc) in NAV_MAP.items():
+        if keyword in q or q in keyword:
+            matches.append((tab, desc, keyword))
 
-    # Search associates
-    ps_match = df[df["PS Display"].astype(str).str.contains(q, case=False, na=False)]
-    if len(ps_match) > 0 and len(id_match) == 0:
-        results_found = True
-        # Show that associate's stats
-        associates = ps_match["PS Display"].unique()
-        for assoc in associates[:3]:  # max 3 associates shown
-            adf = df[df["PS Display"]==assoc]
-            eff = int(adf["Is Effective"].sum())
-            sla = int(adf["SLA Met"].sum())
-            st.markdown(f"**👤 {assoc}** — {len(adf)} events | Eff: {eff}/{len(adf)} ({fmt_pct(eff,len(adf))}) | SLA: {fmt_pct(sla,len(adf))}")
-            cat_breakdown = adf.groupby("Category").agg(Events=("Scannable ID","count"),Effective=("Is Effective","sum"))
-            cat_breakdown["Eff %"] = (cat_breakdown["Effective"]/cat_breakdown["Events"]*100).round(1)
-            st.dataframe(cat_breakdown[["Events","Effective","Eff %"]].sort_values("Events",ascending=False), use_container_width=True)
+    # Deduplicate by tab
+    seen_tabs = set()
+    unique_matches = []
+    for tab, desc, kw in matches:
+        if tab not in seen_tabs:
+            seen_tabs.add(tab)
+            unique_matches.append((tab, desc))
 
-    # Search categories
-    cat_match = df[df["Category"].astype(str).str.contains(q, case=False, na=False)]
-    if len(cat_match) > 0 and len(id_match) == 0 and len(ps_match) == 0:
-        results_found = True
-        categories = cat_match["Category"].unique()
-        for cat in categories[:3]:
-            cdf = df[df["Category"]==cat]
-            eff = int(cdf["Is Effective"].sum())
-            st.markdown(f"**🏷️ {cat}** — {len(cdf)} events | Eff: {fmt_pct(eff,len(cdf))}")
-            # Show top associates for this category
-            ps_in_cat = cdf.groupby("PS Display").agg(Events=("Scannable ID","count"),Effective=("Is Effective","sum")).sort_values("Events",ascending=False).head(5)
-            ps_in_cat["Eff %"] = (ps_in_cat["Effective"]/ps_in_cat["Events"]*100).round(1)
-            st.dataframe(ps_in_cat[["Events","Effective","Eff %"]], use_container_width=True)
-
-    # Search processes
-    if not results_found:
-        proc_match = df[df["Process"].astype(str).str.contains(q, case=False, na=False)]
-        if len(proc_match) > 0:
-            results_found = True
-            st.markdown(f"**📦 {len(proc_match)} events** matching process '{q}'")
-            p_data = proc_match.groupby("Category").agg(Events=("Scannable ID","count"),Effective=("Is Effective","sum")).sort_values("Events",ascending=False)
-            p_data["Eff %"] = (p_data["Effective"]/p_data["Events"]*100).round(1)
-            st.dataframe(p_data[["Events","Effective","Eff %"]], use_container_width=True)
-
-    if not results_found:
-        st.info(f"No results for '{q}'. Try a tracking ID, associate login, category name, or process type.")
+    if unique_matches:
+        st.markdown(f"**Go to:**")
+        for tab, desc in unique_matches[:3]:
+            st.markdown(f"➡️ **{tab}** — {desc}")
+    else:
+        st.info(f"No match for \'{query}\'. Try: cost, cluster, associate, repeat, trend, cycle, hour, sla, dea, export")
     st.markdown("---")
+
 
 def render_trend(df, total, dr, kp=""):
     if total==0: st.warning("No data."); return
